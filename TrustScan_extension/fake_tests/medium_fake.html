@@ -1,0 +1,149 @@
+<!-- medium_fake_job.html -->
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Medium Risk — Fake Job Post</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        body {
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+            background: #f6f8fb;
+            padding: 40px;
+            color: #0f172a;
+        }
+
+        .card {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 6px 30px rgba(15, 23, 42, 0.06);
+            padding: 28px;
+            border: 1px solid #e6eef8;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: #fef3c7;
+            color: #92400e;
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        h1 {
+            font-size: 28px;
+            margin: 8px 0 6px;
+        }
+
+        .meta {
+            color: #475569;
+            margin-bottom: 16px;
+        }
+
+        .section {
+            margin: 14px 0;
+            line-height: 1.6;
+        }
+
+        .list {
+            margin: 8px 0 0 18px;
+            color: #0f172a;
+        }
+
+        .apply {
+            margin-top: 18px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(90deg, #2563eb, #06b6d4);
+            color: white;
+            padding: 10px 14px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 700;
+        }
+
+        .note {
+            font-size: 13px;
+            color: #7c8798;
+            margin-top: 8px;
+        }
+
+        .warn {
+            color: #b91c1c;
+            font-weight: 700;
+        }
+
+        footer {
+            margin-top: 20px;
+            color: #94a3b8;
+            font-size: 13px;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card" role="article" aria-labelledby="title">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <div class="badge">Urgent Hiring</div>
+                <h1 id="title">Remote Data Analyst — Work From Home</h1>
+                <div class="meta">Location: Remote · Employment type: Part-time / Contract · Posted: 2 days ago</div>
+            </div>
+            <div style="text-align:right; color:#0f172a;">Company: <strong>CareerFast Solutions</strong></div>
+        </div>
+
+        <div class="section">
+            <p><strong>Role overview</strong></p>
+            <p>We are looking for motivated individuals to join our growing analytics team. No prior experience required
+                — we provide full online training! Earn <strong>₹35,000–₹50,000 per month</strong> easily from the
+                comfort of your home.</p>
+        </div>
+
+        <div class="section">
+            <p><strong>Key responsibilities</strong></p>
+            <ul class="list">
+                <li>Perform data entry and basic analysis using provided tools</li>
+                <li>Complete small analytic tasks and deliver results on time</li>
+                <li>Attend short onboarding sessions via WhatsApp</li>
+            </ul>
+        </div>
+
+        <div class="section">
+            <p><strong>Requirements</strong></p>
+            <ul class="list">
+                <li>Basic computer knowledge</li>
+                <li>Good communication skills</li>
+                <li>Reliable internet connection</li>
+            </ul>
+        </div>
+
+        <div class="section">
+            <p class="warn"><strong>Registration & contact</strong></p>
+            <p>To apply, send your name and WhatsApp number to <strong>careerfast.hr@gmail.com</strong>. You will be
+                guided through a quick registration process (₹199 for ID verification). Limited slots available — join
+                before <strong>11th Nov</strong>!</p>
+            <div class="apply">
+                <a class="btn" href="mailto:careerfast.hr@gmail.com">Apply via Email</a>
+                <a class="btn" href="#"
+                    onclick="alert('This is a demo page for testing. Do not send real info.');return false;">Register
+                    Now</a>
+            </div>
+            <p class="note">Note: This posting requests a small registration fee and uses a generic email address —
+                these are common scam signals. Use caution.</p>
+        </div>
+
+        <footer>Posted by CareerFast Solutions — ID: CF-2309</footer>
+    </div>
+</body>
+
+</html>
