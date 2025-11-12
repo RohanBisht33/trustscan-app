@@ -1,5 +1,3 @@
-
-
 {
   "manifest_version": 3,
   "name": "AI Job & Resume Analyzer",
@@ -11,7 +9,12 @@
     "scripting"
   ],
   "host_permissions": [
-    "http://localhost:5000/*"
+    "http://localhost:5000/*",
+    "*://*.linkedin.com/*",
+    "*://*.internshala.com/*",
+    "*://*.naukri.com/*",
+    "*://*.indeed.com/*",
+    "*://*.glassdoor.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -24,7 +27,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["browser-polyfill.js", "pdf-parser.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }
@@ -32,10 +35,15 @@
   "background": {
     "service_worker": "background.js"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["pdf.worker.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   }
 }
-

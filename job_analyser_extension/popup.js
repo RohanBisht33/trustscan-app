@@ -3,30 +3,28 @@ document.addEventListener('DOMContentLoaded', function() {
   const settingsBtn = document.getElementById('settingsBtn');
   const statusBadge = document.getElementById('statusBadge');
 
-  // Check extension status
-  chrome.storage.local.get(['extensionEnabled'], function(result) {
+  browser.storage.local.get(['extensionEnabled'], function(result) {
     const enabled = result.extensionEnabled !== false;
     updateStatus(enabled);
   });
 
   analyzeBtn.addEventListener('click', function() {
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      chrome.tabs.sendMessage(tabs[0].id, {action: 'analyzeFullPage'});
+    browser.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      browser.tabs.sendMessage(tabs[0].id, {action: 'analyzeFullPage'});
       window.close();
     });
   });
 
   settingsBtn.addEventListener('click', function() {
-    chrome.storage.local.get(['extensionEnabled'], function(result) {
+    browser.storage.local.get(['extensionEnabled'], function(result) {
       const currentState = result.extensionEnabled !== false;
       const newState = !currentState;
       
-      chrome.storage.local.set({extensionEnabled: newState}, function() {
+      browser.storage.local.set({extensionEnabled: newState}, function() {
         updateStatus(newState);
         
-        // Notify content script
-        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-          chrome.tabs.sendMessage(tabs[0].id, {
+        browser.tabs.query({active: true, currentWindow: true}, function(tabs) {
+          browser.tabs.sendMessage(tabs[0].id, {
             action: 'toggleExtension',
             enabled: newState
           });
