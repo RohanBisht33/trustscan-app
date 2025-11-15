@@ -1,5 +1,4 @@
 
-
 {
   "manifest_version": 3,
   "name": "AI Job & Resume Analyzer",
@@ -11,7 +10,13 @@
     "scripting"
   ],
   "host_permissions": [
-    "http://localhost:5000/*"
+    "http://localhost:5000/*",
+    "*://*.linkedin.com/*",
+    "*://*.internshala.com/*",
+    "*://*.naukri.com/*",
+    "*://*.indeed.com/*",
+    "*://*.glassdoor.com/*",
+    "<all_urls>"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -38,4 +43,3 @@
     "128": "icons/icon128.png"
   }
 }
-
