@@ -11,9 +11,43 @@
   let isEnabled = true;
   let tooltip = null;
   let analysisCache = new Map();
-  let pdfJsLoaded = false;
+  let jobCards = [];
+  let observer = null;
 
-  // Initialize
+  // Site-specific selectors for job listings
+  const SITE_SELECTORS = {
+    'linkedin.com': {
+      jobCard: '.job-card-container, .jobs-search-results__list-item',
+      title: '.job-card-list__title, .job-card-container__link',
+      company: '.job-card-container__company-name',
+      description: '.job-card-container__job-insight'
+    },
+    'internshala.com': {
+      jobCard: '.individual_internship, .internship_meta',
+      title: '.job-internship-name, .profile',
+      company: '.company-name, .company_name',
+      description: '.internship_other_details'
+    },
+    'naukri.com': {
+      jobCard: '.jobTuple, .jobTupleHeader',
+      title: '.title, .jobTuple-title',
+      company: '.companyInfo, .subTitle',
+      description: '.job-description'
+    },
+    'indeed.com': {
+      jobCard: '.job_seen_beacon, .jobsearch-SerpJobCard',
+      title: '.jobTitle, .jcs-JobTitle',
+      company: '.companyName',
+      description: '.job-snippet'
+    },
+    'glassdoor.com': {
+      jobCard: '.react-job-listing',
+      title: '.job-title',
+      company: '.employer-name',
+      description: '.job-description'
+    }
+  };
+
   init();
 
   function init() {
@@ -24,12 +58,12 @@
         createTooltip();
         attachListeners();
         detectJobListings();
-        setupPDFSupport();
+        observeDOMChanges();
+        detectPDFs();
       }
     });
   }
 
-  // Listen for messages
   browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     if (request.action === 'toggleExtension') {
       isEnabled = request.enabled;
@@ -46,31 +80,349 @@
     }
   });
 
-  // ==================== PDF SUPPORT ====================
-  
-  async function setupPDFSupport() {
-    // Load PDF.js library
-    if (!pdfJsLoaded) {
-      await loadPDFJs();
+  function getCurrentSite() {
+    const hostname = window.location.hostname;
+    for (const site in SITE_SELECTORS) {
+      if (hostname.includes(site)) {
+        return site;
+      }
     }
+    return null;
+  }
+
+  function detectJobListings() {
+    const site = getCurrentSite();
+    if (!site) return;
+
+    const selectors = SITE_SELECTORS[site];
+    const cards = document.querySelectorAll(selectors.jobCard);
+    
+    jobCards = [];
+    cards.forEach((card, index) => {
+      const text = extractJobCardText(card, selectors);
+      if (text.length > 50) {
+        const analysis = performAnalysis(text);
+        if (analysis.type === 'job_listing') {
+          jobCards.push({ element: card, analysis, text });
+          addJobIndicator(card, analysis, index);
+        }
+      }
+    });
+
+    if (jobCards.length > 0) {
+      showBatchNotification(`✓ Analyzed ${jobCards.length} job listings`);
+    }
+  }
+
+  function extractJobCardText(card, selectors) {
+    let text = '';
+    
+    try {
+      const title = card.querySelector(selectors.title);
+      const company = card.querySelector(selectors.company);
+      const description = card.querySelector(selectors.description);
+      
+      if (title) text += title.textContent + ' ';
+      if (company) text += company.textContent + ' ';
+      if (description) text += description.textContent + ' ';
+      
+      // Fallback to full card text
+      if (!text.trim()) {
+        text = card.textContent;
+      }
+    } catch (e) {
+      text = card.textContent;
+    }
+    
+    return text.trim();
+  }
+
+  function addJobIndicator(card, analysis, index) {
+    // Remove existing indicator
+    const existing = card.querySelector('.ai-job-indicator');
+    if (existing) existing.remove();
+
+    const indicator = document.createElement('div');
+    indicator.className = 'ai-job-indicator';
+    indicator.style.cssText = `
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: ${getTrustColor(analysis.trustScore)};
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      z-index: 1000;
+      cursor: pointer;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    `;
+    indicator.textContent = analysis.trustScore;
+    indicator.title = `Trust Score: ${analysis.trustScore}%`;
+
+    // Make parent position relative
+    if (getComputedStyle(card).position === 'static') {
+      card.style.position = 'relative';
+    }
+
+    indicator.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const rect = indicator.getBoundingClientRect();
+      showDetailedAnalysis(analysis, rect.left, rect.bottom + 5);
+    });
+
+    card.appendChild(indicator);
+  }
+
+  function getTrustColor(score) {
+    if (score >= 80) return '#22c55e';
+    if (score >= 60) return '#eab308';
+    return '#ef4444';
+  }
+
+  function clearJobIndicators() {
+    document.querySelectorAll('.ai-job-indicator').forEach(el => el.remove());
+  }
+
+  function observeDOMChanges() {
+    if (observer) observer.disconnect();
+
+    observer = new MutationObserver((mutations) => {
+      let shouldReanalyze = false;
+      
+      mutations.forEach(mutation => {
+        if (mutation.addedNodes.length > 0) {
+          mutation.addedNodes.forEach(node => {
+            if (node.nodeType === 1 && node.matches && 
+                (node.matches('.job-card-container') || 
+                 node.matches('.individual_internship') ||
+                 node.matches('.jobTuple'))) {
+              shouldReanalyze = true;
+            }
+          });
+        }
+      });
+
+      if (shouldReanalyze) {
+        setTimeout(detectJobListings, 500);
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  async function detectPDFs() {
+    // Check if current page is a PDF
+    if (document.contentType === 'application/pdf' || 
+        window.location.pathname.endsWith('.pdf')) {
+      await analyzePDFPage();
+    }
+
+    // Monitor for PDF links
+    document.addEventListener('click', async (e) => {
+      const target = e.target.closest('a');
+      if (target && target.href && target.href.endsWith('.pdf')) {
+        const pdfUrl = target.href;
+        const text = await window.PDFParser.extractText(pdfUrl);
+        if (text) {
+          const analysis = performAnalysis(text);
+          if (analysis.type !== 'unknown') {
+            // Show notification about PDF analysis
+            showPDFNotification(target, analysis);
+          }
+        }
+      }
+    });
+
+    // Monitor file inputs for PDF uploads
+    document.querySelectorAll('input[type="file"]').forEach(input => {
+      input.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (file && file.type === 'application/pdf') {
+          const text = await window.PDFParser.extractFromBlob(file);
+          if (text) {
+            const analysis = performAnalysis(text);
+            showPDFAnalysisResult(analysis);
+          }
+        }
+      });
+    });
+  }
+
+  async function analyzePDFPage() {
+    try {
+      const text = await window.PDFParser.extractText(window.location.href);
+      if (text) {
+        const analysis = performAnalysis(text);
+        if (analysis.type !== 'unknown') {
+          showPDFOverlay(analysis);
+        }
+      }
+    } catch (error) {
+      console.error('PDF analysis failed:', error);
+    }
+  }
+
+  function showPDFOverlay(analysis) {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: white;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      z-index: 999999;
+      max-width: 350px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    `;
+
+    overlay.innerHTML = generateDetailedHTML(analysis);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '×';
+    closeBtn.style.cssText = `
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: #64748b;
+      padding: 0;
+      width: 30px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+    closeBtn.onclick = () => overlay.remove();
+
+    overlay.appendChild(closeBtn);
+    document.body.appendChild(overlay);
+  }
+
+  function showPDFNotification(linkElement, analysis) {
+    const badge = document.createElement('span');
+    badge.style.cssText = `
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      background: ${analysis.type === 'job_listing' ? '#eff6ff' : '#f0fdf4'};
+      color: ${analysis.type === 'job_listing' ? '#1e40af' : '#166534'};
+    `;
+    badge.textContent = analysis.type === 'job_listing' ? 
+      `Job (${analysis.trustScore}%)` : 
+      `Resume (${analysis.score}%)`;
+    
+    linkElement.appendChild(badge);
+  }
+
+  function showPDFAnalysisResult(analysis) {
+    const result = document.createElement('div');
+    result.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: white;
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+      z-index: 999999;
+      max-width: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      animation: slideIn 0.3s ease-out;
+    `;
+
+    result.innerHTML = `
+      <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px;">
+        📄 PDF Analyzed
+      </div>
+      <div style="font-size: 14px; color: #64748b;">
+        ${analysis.type === 'job_listing' ? 
+          `Trust Score: <strong>${analysis.trustScore}%</strong>` : 
+          `Profile Strength: <strong>${analysis.score}%</strong>`}
+      </div>
+    `;
+
+    document.body.appendChild(result);
+
+    setTimeout(() => {
+      result.style.transition = 'opacity 0.3s';
+      result.style.opacity = '0';
+      setTimeout(() => result.remove(), 300);
+    }, 5000);
+  }
+
+  function createTooltip() {
+    if (tooltip) return;
 
     // Check if current page is PDF
     if (isPDFPage()) {
       await analyzePDFPage();
     }
 
-    // Monitor PDF links
-    monitorPDFLinks();
+  function showDetailedAnalysis(analysis, x, y) {
+    if (!tooltip) createTooltip();
     
-    // Monitor file uploads
-    monitorFileUploads();
+    tooltip.innerHTML = generateDetailedHTML(analysis);
+    tooltip.style.display = 'block';
+    
+    const tooltipRect = tooltip.getBoundingClientRect();
+    let left = x - tooltipRect.width / 2;
+    let top = y;
+
+    if (left < 10) left = 10;
+    if (left + tooltipRect.width > window.innerWidth - 10) {
+      left = window.innerWidth - tooltipRect.width - 10;
+    }
+    if (top + tooltipRect.height > window.innerHeight - 10) {
+      top = y - tooltipRect.height - 40;
+    }
+
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+
+    // Close on click outside
+    setTimeout(() => {
+      const closeHandler = (e) => {
+        if (!tooltip.contains(e.target)) {
+          hideTooltip();
+          document.removeEventListener('click', closeHandler);
+        }
+      };
+      document.addEventListener('click', closeHandler);
+    }, 100);
   }
 
-  function isPDFPage() {
-    return document.contentType === 'application/pdf' || 
-           window.location.href.toLowerCase().endsWith('.pdf') ||
-           document.querySelector('embed[type="application/pdf"]') !== null;
-  }
+  function showTooltip(x, y, content) {
+    if (!tooltip) createTooltip();
+    
+    tooltip.innerHTML = content;
+    tooltip.style.display = 'block';
+    
+    const tooltipRect = tooltip.getBoundingClientRect();
+    let left = x - tooltipRect.width / 2;
+    let top = y - tooltipRect.height - 10;
+
+    if (left < 10) left = 10;
+    if (left + tooltipRect.width > window.innerWidth - 10) {
+      left = window.innerWidth - tooltipRect.width - 10;
+    }
+    if (top < 10) top = y + 20;
 
   async function loadPDFJs() {
     return new Promise((resolve, reject) => {
@@ -136,17 +488,14 @@
         fullText += pageText + '\n';
       }
 
-      return fullText.trim();
-    } catch (error) {
-      console.error('PDF blob extraction error:', error);
-      return null;
-    }
-  }
-
-  async function analyzePDFPage() {
-    try {
-      console.log('📄 Analyzing PDF page...');
-      const text = await extractTextFromPDF(window.location.href);
+    clearTimeout(hoverTimeout);
+    hoverTimeout = setTimeout(() => {
+      const element = e.target;
+      
+      // Skip if hovering over job card indicator
+      if (element.classList.contains('ai-job-indicator')) return;
+      
+      const text = getElementText(element);
       
       if (text && text.length > 100) {
         const analysis = performAnalysis(text);
@@ -159,60 +508,41 @@
     }
   }
 
-  function monitorPDFLinks() {
-    document.addEventListener('click', async (e) => {
-      const target = e.target.closest('a');
-      if (target && target.href && target.href.toLowerCase().endsWith('.pdf')) {
-        e.preventDefault();
-        
-        showLoadingNotification('📄 Analyzing PDF...');
-        
-        try {
-          const text = await extractTextFromPDF(target.href);
-          if (text) {
-            const analysis = performAnalysis(text);
-            if (analysis.type !== 'unknown') {
-              showPDFAnalysisModal(analysis, text, target.href);
-            } else {
-              showNotification('❌ Could not analyze PDF content');
-            }
-          }
-        } catch (error) {
-          showNotification('❌ Failed to load PDF');
-        }
-        
-        // Allow opening in new tab after 1 second
-        setTimeout(() => {
-          window.open(target.href, '_blank');
-        }, 1000);
+  function handleMouseOut() {
+    clearTimeout(hoverTimeout);
+    setTimeout(() => {
+      if (!tooltip || !tooltip.matches(':hover')) {
+        hideTooltip();
       }
-    });
+    }, 200);
   }
 
-  function monitorFileUploads() {
-    // Monitor existing file inputs
-    document.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
-
-    // Monitor new file inputs
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach(mutation => {
-        mutation.addedNodes.forEach(node => {
-          if (node.nodeType === 1) {
-            if (node.matches && node.matches('input[type="file"]')) {
-              attachFileHandler(node);
-            }
-            node.querySelectorAll && node.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
-          }
-        });
-      });
-    });
-
-    observer.observe(document.body, { childList: true, subtree: true });
+  function getElementText(element) {
+    let text = '';
+    
+    if (element.tagName === 'P' || element.tagName === 'DIV' || 
+        element.tagName === 'SECTION' || element.tagName === 'ARTICLE') {
+      text = element.innerText || element.textContent;
+    }
+    
+    return text.trim().substring(0, 2000);
   }
 
-  function attachFileHandler(input) {
-    if (input.dataset.aiAnalyzerAttached) return;
-    input.dataset.aiAnalyzerAttached = 'true';
+  function analyzeText(text, x, y) {
+    // Check cache
+    if (analysisCache.has(text)) {
+      const analysis = analysisCache.get(text);
+      if (analysis.type !== 'unknown') {
+        const tooltipContent = generateTooltipHTML(analysis);
+        showTooltip(x, y, tooltipContent);
+      }
+      return;
+    }
+
+    const analysis = performAnalysis(text);
+    analysisCache.set(text, analysis);
+    
+    if (analysis.type === 'unknown') return;
 
     input.addEventListener('change', async (e) => {
       const file = e.target.files[0];
@@ -311,96 +641,15 @@
 
   function detectType(text) {
     const lower = text.toLowerCase();
-    let resumeScore = 0;
-    let jobScore = 0;
-
-    // Strong resume indicators (weight: 3)
-    const strongResumeIndicators = [
-      /\b(resume|curriculum vitae|cv)\b/i,
-      /\b(objective|career objective|professional summary)\b/i,
-      /\beducation\s*(history|background)?:/i,
-      /\bwork experience:/i,
-      /\bprofessional experience:/i,
-      /\bcertifications?:/i,
-      /\bprojects?:/i,
-      /\b(b\.?tech|m\.?tech|bachelor|master|phd|mba)\b/i,
-      /\b(cgpa|gpa|percentage|marks)\b/i,
-      /linkedin\.com\/in\//i,
-      /github\.com\/[a-z]/i
-    ];
-
-    // Medium resume indicators (weight: 2)
-    const mediumResumeIndicators = [
-      /\b(skills?|technical skills?|core competencies)\b/i,
-      /\b(languages?|programming)\b/i,
-      /\b(achievements?|accomplishments?)\b/i,
-      /\b(references?|hobbies|interests)\b/i,
-      /\b\d+\s*years?\s*(of\s*)?experience\b/i,
-      /\b(intern|internship|co-op)\b/i
-    ];
-
-    // Weak resume indicators (weight: 1)
-    const weakResumeIndicators = [
-      /\b(email|phone|mobile|contact)\s*:/i,
-      /\b[a-z]+@[a-z]+\.[a-z]+\b/i,
-      /\b\+?\d{10,}\b/
-    ];
-
-    // Strong job indicators (weight: 3)
-    const strongJobIndicators = [
-      /\b(job description|job opening|position|vacancy|role)\b/i,
-      /\b(we are hiring|looking for|seeking|wanted)\b/i,
-      /\b(apply now|apply here|submit application)\b/i,
-      /\b(requirements?|qualifications?|eligibility)\b/i,
-      /\b(responsibilities|duties|what you('ll| will) do)\b/i,
-      /\b(salary|compensation|ctc|package|benefits?)\b/i,
-      /\b(join our team|work with us)\b/i,
-      /\b(full[- ]?time|part[- ]?time|contract|freelance|remote)\b/i
-    ];
-
-    // Medium job indicators (weight: 2)
-    const mediumJobIndicators = [
-      /\b(company|organization|firm|startup)\b/i,
-      /\b(location|office|workplace|work from home|wfh)\b/i,
-      /\b(deadline|last date|apply by)\b/i,
-      /\b(experience required|years of experience)\b/i,
-      /\b(skills? required|must have|should have)\b/i
-    ];
-
-    // Count indicators
-    strongResumeIndicators.forEach(pattern => {
-      if (pattern.test(text)) resumeScore += 3;
-    });
-    mediumResumeIndicators.forEach(pattern => {
-      if (pattern.test(text)) resumeScore += 2;
-    });
-    weakResumeIndicators.forEach(pattern => {
-      if (pattern.test(text)) resumeScore += 1;
-    });
-
-    strongJobIndicators.forEach(pattern => {
-      if (pattern.test(text)) jobScore += 3;
-    });
-    mediumJobIndicators.forEach(pattern => {
-      if (pattern.test(text)) jobScore += 2;
-    });
-
-    // Additional context checks
-    if (/\b(dear|hi|hello)\s+(sir|madam|hiring manager|recruiter)/i.test(text)) {
-      resumeScore += 2; // Cover letter
-    }
-
-    if (/\b(posted|published)\s+\d+\s+(day|hour|week)s?\s+ago/i.test(text)) {
-      jobScore += 2;
-    }
-
-    console.log(`🔍 Detection scores - Resume: ${resumeScore}, Job: ${jobScore}`);
-
-    // Determine type with threshold
-    if (resumeScore >= 6 && resumeScore > jobScore) return 'resume';
-    if (jobScore >= 6 && jobScore > resumeScore) return 'job_listing';
-    if (resumeScore > jobScore && resumeScore >= 4) return 'resume';
-    if (jobScore > resumeScore && jobScore >= 4) return 'job_listing';
+    
+    const resumeKeywords = ['experience', 'education', 'skills', 'btech', 'graduate', 'resume', 'cv', 'profile', 'portfolio'];
+    const jobKeywords = ['looking for', 'hiring', 'job', 'position', 'required', 'apply', 'vacancy', 'opening'];
+    
+    const resumeScore = resumeKeywords.filter(k => lower.includes(k)).length;
+    const jobScore = jobKeywords.filter(k => lower.includes(k)).length;
+    
+    if (resumeScore > jobScore && resumeScore >= 2) return 'resume';
+    if (jobScore > resumeScore && jobScore >= 2) return 'job_listing';
     
     return 'unknown';
   }
@@ -413,30 +662,26 @@
     const flags = [];
     const positives = [];
 
-    console.log('💼 Analyzing job listing...');
-
-    // CRITICAL RED FLAGS (Very High Weight)
-    const criticalFlags = [
-      { pattern: /\b(aadhaar|aadhar|pan card|passport|id card|voter id|bank passbook|account details)\b/i, 
-        flag: '🚨 Asks for sensitive ID/financial documents', weight: 40 },
-      { pattern: /\b(registration fee|joining fee|security deposit|advance payment|pay.*fee)\b/i, 
-        flag: '🚨 Demands payment/fees upfront', weight: 40 },
-      { pattern: /\b(money transfer|payment processing agent|fund transfer|bitcoin|cryptocurrency)\b/i, 
-        flag: '🚨 Suspicious money handling role', weight: 35 }
-    ];
-
-    // HIGH RED FLAGS
-    const highFlags = [
-      { pattern: /\b(no experience|no qualification|anyone can apply|no skills required)\b/i, 
-        flag: '⚠️ No experience needed (common scam)', weight: 20 },
-      { pattern: /\b(whatsapp|telegram|instagram dm|facebook message)\b.*\b(apply|contact|join)\b/i, 
-        flag: '⚠️ Unofficial communication channel', weight: 25 },
-      { pattern: /\b(google form|form\.google|typeform).*\b(apply|submit)\b/i, 
-        flag: '⚠️ Non-professional application method', weight: 20 },
-      { pattern: /\b(earn|make|get paid)\s*₹?\s*\d{4,}.*\b(daily|per day|everyday)\b/i, 
-        flag: '⚠️ Unrealistic daily earning claims', weight: 25 },
-      { pattern: /\b(training.*paid|get paid.*training|earn while.*learn)\b/i, 
-        flag: '⚠️ Suspicious training payment model', weight: 20 }
+    const scamPatterns = [
+      { pattern: /no experience needed|no experience required/i, flag: 'No experience needed (common scam)', weight: 15 },
+      { pattern: /aadhaar|aadhar|pan card|bank passbook|id proof|upload.*id/i, flag: 'Asks for sensitive ID documents', weight: 35 },
+      { pattern: /registration fee|pay.*fee|payment.*required|deposit/i, flag: 'Asks for payment/fees', weight: 35 },
+      { pattern: /google form|whatsapp|telegram|social media/i, flag: 'Unofficial application method', weight: 25 },
+      { pattern: /training.*paid|earn.*training|paid.*learn/i, flag: 'Suspicious training payment claims', weight: 20 },
+      { pattern: /fast promotion|quick promotion|immediate promotion/i, flag: 'Unrealistic promotion promises', weight: 20 },
+      { pattern: /virtual assistant.*remote.*no experience/i, flag: 'Classic VA scam pattern', weight: 25 },
+      { pattern: /payment processing|money transfer|fund transfer/i, flag: 'Money handling scam risk', weight: 30 },
+      { pattern: /earn ₹|earn rs|salary ₹\d{5,}/i, flag: 'Unusually high salary promise', weight: 20 },
+      { pattern: /work from home.*₹|wfh.*earn/i, flag: 'Work-from-home money scheme', weight: 20 },
+      { pattern: /no interview/i, flag: 'No interview process', weight: 18 },
+      { pattern: /easy money|quick money|daily income|weekly payment/i, flag: 'Unrealistic earning promises', weight: 20 },
+      { pattern: /click here|click.*link|bit\.ly|shortened url/i, flag: 'Suspicious links', weight: 15 },
+      { pattern: /urgent.*hiring|immediate.*joining|join today/i, flag: 'Pressure tactics', weight: 12 },
+      { pattern: /guaranteed.*income|assured.*salary/i, flag: 'Guaranteed income claims', weight: 18 },
+      { pattern: /part.*time.*\d{4,}|side.*income.*\d{4,}/i, flag: 'Unrealistic part-time pay', weight: 15 },
+      { pattern: /flexible.*timing|own.*hours|work.*anytime/i, flag: 'Vague work arrangement', weight: 8 },
+      { pattern: /simple.*task|easy.*work|basic.*work/i, flag: 'Vague job description', weight: 10 },
+      { pattern: /international.*company.*hiring|global.*hiring/i, flag: 'Vague international claims', weight: 12 }
     ];
 
     // MEDIUM RED FLAGS
@@ -478,9 +723,9 @@
       }
     });
 
-    // Company verification
-    const hasLegitCompany = /\b(pvt\.?\s*ltd|private limited|inc\.|incorporated|corporation|llp|technologies|solutions|systems|software)\b/i.test(text);
-    const hasVagueCompany = /\b(global|international|world|universal|best|top|leading)\b.*\b(company|firm|organization)\b/i.test(text) && !hasLegitCompany;
+    const hasLegitCompany = /(pvt\.?\s*ltd|private limited|inc\.|corporation|technologies|solutions|systems)/i.test(text);
+    const hasVagueCompany = /global|international|world|universal|best|top|leading/i.test(text) && 
+                            !/pvt|ltd|inc|corp/i.test(text);
     
     if (hasLegitCompany) {
       positives.push('✅ Legitimate company structure');
@@ -493,9 +738,8 @@
       score -= 10;
     }
 
-    // Application process check
-    const hasProperProcess = /@\w+\.(com|in|co|org)|careers\.|apply\..*\.(com|in)|linkedin\.com\/jobs|naukri\.com|indeed\.com/i.test(text);
-    const hasUnprofessionalProcess = /\b(whatsapp|telegram|dm|message me|contact.*\d{10})\b/i.test(lower);
+    const hasProperProcess = /@.*\.(com|in|co)|careers\.|apply.*official|linkedin\.com|naukri\.com/i.test(text);
+    const hasUnprofessionalProcess = /google form|whatsapp|telegram|dm|direct message/i.test(lower);
     
     if (hasProperProcess) {
       positives.push('✅ Professional application channel');
@@ -505,10 +749,7 @@
       score -= 15;
     }
 
-    // Salary reasonableness
-    const salaryMatch = text.match(/₹\s*(\d+)[,\d]*\s*(?:per month|\/month|pm|monthly)/i) ||
-                       text.match(/(\d+)\s*(?:lpa|lakhs? per annum)/i);
-    
+    const salaryMatch = text.match(/₹\s*(\d+)[,\d]*\s*(?:per month|\/month|pm)/i);
     if (salaryMatch) {
       let monthlySalary;
       if (text.includes('lpa') || text.includes('lakh')) {
@@ -532,19 +773,8 @@
       }
     }
 
-    // Job description quality
-    const hasDetailedDesc = text.length > 300 && /\b(responsibilities|requirements|qualifications|what you('ll| will) do)\b/i.test(text);
-    if (hasDetailedDesc) {
-      positives.push('✅ Detailed job description');
-      score += 5;
-    } else if (text.length < 150) {
-      flags.push('⚠️ Very brief job posting');
-      score -= 8;
-    }
-
-    // Self-aware red flags
-    if (/\b(red flag|warning|scam|fake|fraud|beware)\b/i.test(text)) {
-      flags.push('🚨 Contains warning/scam keywords');
+    if (/red flag|warning|suspicious|scam/i.test(text)) {
+      flags.push('Job posting mentions red flags');
       score -= 20;
     }
 
@@ -567,21 +797,9 @@
     const redFlags = [];
     let score = 60; // Start with base score
 
-    console.log('📄 Analyzing resume...');
-
-    // Technical skills detection
-    const techSkills = [
-      'python', 'javascript', 'java', 'c++', 'c#', 'ruby', 'php', 'swift', 'kotlin', 'go',
-      'react', 'angular', 'vue', 'node', 'express', 'django', 'flask', 'spring', 'laravel',
-      'sql', 'mysql', 'postgresql', 'mongodb', 'redis', 'oracle',
-      'aws', 'azure', 'gcp', 'docker', 'kubernetes', 'jenkins', 'git',
-      'machine learning', 'deep learning', 'ai', 'data science', 'nlp', 'computer vision',
-      'html', 'css', 'typescript', 'sass', 'webpack', 'rest api', 'graphql'
-    ];
-    
-    const foundSkills = techSkills.filter(skill => 
-      new RegExp(`\\b${skill.replace(/\+/g, '\\+')}\\b`, 'i').test(text)
-    );
+    const techSkills = ['python', 'javascript', 'java', 'react', 'node', 'sql', 'aws', 'docker', 'kubernetes', 
+                        'ml', 'ai', 'deep learning', 'django', 'flask', 'angular', 'vue', 'mongodb', 'postgresql'];
+    const foundSkills = techSkills.filter(skill => lower.includes(skill));
     
     if (foundSkills.length > 0) {
       highlights.push(`💻 ${foundSkills.length} technical skills: ${foundSkills.slice(0, 6).join(', ')}${foundSkills.length > 6 ? '...' : ''}`);
@@ -600,24 +818,15 @@
       console.log('  ⚠️  Too many skills (-15)');
     }
 
-    // Experience detection
-    const expPatterns = [
-      /(\d+)[\s\+]*years?\s+(?:of\s+)?experience/i,
-      /experience[:\s]+(\d+)[\s\+]*years?/i,
-      /(\d+)[\s\+]*yrs?\s+exp/i
-    ];
-    
-    let years = null;
-    for (const pattern of expPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        years = parseInt(match[1]);
-        break;
-      }
+    if (foundSkills.length > 15) {
+      redFlags.push('Excessive skills listed (may be exaggerated)');
+      score -= 20;
     }
 
-    if (years !== null) {
-      highlights.push(`⏱️ ${years}+ years of experience`);
+    const expMatch = text.match(/(\d+)\+?\s*years?/i);
+    if (expMatch) {
+      const years = parseInt(expMatch[1]);
+      highlights.push(`${years} years experience`);
       
       if (years <= 2) score += 10;
       else if (years <= 5) score += 18;
@@ -628,17 +837,9 @@
         score += 5;
       }
 
-      console.log(`  ✅ ${years} years experience`);
-
-      // Experience vs skills mismatch
-      if (years < 2 && foundSkills.length > 15) {
-        redFlags.push('⚠️ Too many skills for experience level');
-        score -= 18;
-        console.log('  ⚠️  Skill-experience mismatch (-18)');
-      }
-      if (years > 5 && foundSkills.length < 5) {
-        redFlags.push('⚠️ Few skills for experience level');
-        score -= 10;
+      if (years < 2 && foundSkills.length > 12) {
+        redFlags.push('Too many skills for experience level');
+        score -= 15;
       }
     } else {
       redFlags.push('❌ No clear experience timeline');
@@ -646,21 +847,8 @@
       console.log('  ❌ No experience (-12)');
     }
 
-    // Education detection
-    const educationPatterns = [
-      /\b(b\.?tech|bachelor of technology)\b/i,
-      /\b(m\.?tech|master of technology)\b/i,
-      /\b(b\.?e\.?|bachelor of engineering)\b/i,
-      /\b(m\.?e\.?|master of engineering)\b/i,
-      /\b(bsc|b\.sc|bachelor of science)\b/i,
-      /\b(msc|m\.sc|master of science)\b/i,
-      /\b(bca|bachelor of computer applications)\b/i,
-      /\b(mca|master of computer applications)\b/i,
-      /\b(mba|master of business administration)\b/i,
-      /\b(phd|ph\.d|doctorate)\b/i
-    ];
-
-    const educationFound = educationPatterns.some(pattern => pattern.test(text));
+    const educationKeywords = ['btech', 'mtech', 'bachelor', 'master', 'degree', 'bs', 'ms', 'phd', 'b.e', 'm.e'];
+    const hasEducation = educationKeywords.some(edu => lower.includes(edu));
     
     if (educationFound) {
       highlights.push('🎓 Technical degree mentioned');
@@ -672,7 +860,6 @@
       console.log('  ❌ No education (-15)');
     }
 
-    // Unrealistic claims detection
     const unrealisticPatterns = [
       { pattern: /\b(expert in everything|know everything|master of all)\b/i, 
         flag: '🚩 Claims expertise in everything', weight: 20 },
@@ -692,10 +879,8 @@
       }
     });
 
-    // Action verbs and achievements
-    const actionVerbs = ['developed', 'built', 'created', 'designed', 'implemented', 'led', 'managed', 'delivered', 'architected', 'optimized', 'improved', 'reduced', 'increased'];
-    const hasActionVerbs = actionVerbs.some(verb => new RegExp(`\\b${verb}\\b`, 'i').test(text));
-    const onlyBuzzwords = /\b(hard[\s-]?working|team player|fast learner|motivated|dedicated)\b/i.test(text) && !hasActionVerbs;
+    const hasActionVerbs = /developed|built|created|designed|implemented|managed|led/i.test(text);
+    const onlyBuzzwords = /hard working|team player|fast learner/i.test(text) && !hasActionVerbs;
     
     if (hasActionVerbs) {
       highlights.push('✅ Contains specific achievements');
@@ -707,8 +892,10 @@
       console.log('  ⚠️  Only buzzwords (-12)');
     }
 
-    // Projects and portfolio
-    const hasProjects = /\b(project|portfolio|github|gitlab|bitbucket|built|developed)\b/i.test(text);
+    const hasProjects = /project|github|portfolio|built/i.test(text);
+    const hasCompanies = /pvt|ltd|inc|corp|company/i.test(text);
+    const hasDates = /\d{4}|\d{2}\/\d{2}/i.test(text);
+    
     if (hasProjects) {
       highlights.push('✅ Projects/portfolio mentioned');
       score += 12;
@@ -723,11 +910,12 @@
       console.log('  ✅ Companies found (+10)');
     }
 
-    // Timeline and dates
-    const hasDates = /\b(20\d{2}|19\d{2})\b/.test(text) || /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\b/i.test(text);
-    if (hasDates) {
-      highlights.push('✅ Timeline with dates');
-      score += 8;
+    const hasEmail = /@/i.test(text);
+    const hasPhone = /\d{10}|\+\d{2}\s?\d{10}/i.test(text);
+    const hasLinkedIn = /linkedin/i.test(text);
+    
+    if (hasEmail || hasPhone) {
+      score += 5;
     } else {
       redFlags.push('⚠️ No dates/timeline provided');
       score -= 10;
@@ -761,9 +949,8 @@
       console.log('  ❌ No contact (-12)');
     }
 
-    // Resume length check
-    if (text.length < 300) {
-      redFlags.push('⚠️ Resume appears too short/incomplete');
+    if (text.length < 200) {
+      redFlags.push('Resume appears incomplete');
       score -= 15;
       console.log('  ⚠️  Too short (-15)');
     } else if (text.length > 2000) {
@@ -771,8 +958,7 @@
       score += 5;
     }
 
-    // Spelling/grammar check
-    const commonMistakes = /\b(experiance|exprience|experince|skillz|companey|projcts|recieved|occured)\b/i;
+    const commonMistakes = /experiance|exprience|skillz|companey|projcts/i;
     if (commonMistakes.test(text)) {
       redFlags.push('⚠️ Contains spelling errors');
       score -= 10;
@@ -797,359 +983,41 @@
     };
   }
 
-  // ==================== JOB LISTING DETECTION ====================
-
-  function detectJobListings() {
-    const site = getCurrentSite();
-    if (!site) return;
-
-    const selectors = SITE_SELECTORS[site];
-    const cards = document.querySelectorAll(selectors.jobCard);
-    
-    let analyzed = 0;
-    cards.forEach((card, index) => {
-      const text = extractJobCardText(card, selectors);
-      if (text.length > 100) {
-        const analysis = performAnalysis(text);
-        if (analysis.type === 'job_listing') {
-          addJobIndicator(card, analysis, index);
-          analyzed++;
-        }
-      }
-    });
-
-    if (analyzed > 0) {
-      showBatchNotification(`✅ Analyzed ${analyzed} job listings`);
-    }
-  }
-
-  const SITE_SELECTORS = {
-    'linkedin.com': {
-      jobCard: '.job-card-container, .jobs-search-results__list-item, .scaffold-layout__list-item',
-      title: '.job-card-list__title, .job-card-container__link',
-      company: '.job-card-container__company-name',
-      description: '.job-card-container__job-insight'
-    },
-    'internshala.com': {
-      jobCard: '.individual_internship, .internship_meta',
-      title: '.job-internship-name, .profile',
-      company: '.company-name, .company_name',
-      description: '.internship_other_details'
-    },
-    'naukri.com': {
-      jobCard: '.jobTuple, .srp-jobtuple-wrapper',
-      title: '.title, .jobTuple-title',
-      company: '.companyInfo, .subTitle',
-      description: '.job-description'
-    },
-    'indeed.com': {
-      jobCard: '.job_seen_beacon, .jobsearch-SerpJobCard',
-      title: '.jobTitle, .jcs-JobTitle',
-      company: '.companyName',
-      description: '.job-snippet'
-    }
-  };
-
-  function getCurrentSite() {
-    const hostname = window.location.hostname;
-    for (const site in SITE_SELECTORS) {
-      if (hostname.includes(site)) {
-        return site;
-      }
-    }
-    return null;
-  }
-
-  function extractJobCardText(card, selectors) {
-    let text = '';
-    try {
-      const title = card.querySelector(selectors.title);
-      const company = card.querySelector(selectors.company);
-      const description = card.querySelector(selectors.description);
-      
-      if (title) text += title.textContent + ' ';
-      if (company) text += company.textContent + ' ';
-      if (description) text += description.textContent + ' ';
-      
-      if (!text.trim()) {
-        text = card.textContent;
-      }
-    } catch (e) {
-      text = card.textContent;
-    }
-    return text.trim();
-  }
-
-  function addJobIndicator(card, analysis, index) {
-    const existing = card.querySelector('.ai-job-indicator');
-    if (existing) existing.remove();
-
-    const indicator = document.createElement('div');
-    indicator.className = 'ai-job-indicator';
-    const color = getTrustColor(analysis.trustScore);
-    
-    indicator.style.cssText = `
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      min-width: 36px;
-      height: 36px;
-      border-radius: 18px;
-      background: ${color};
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      font-weight: 700;
-      padding: 0 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-      z-index: 10000;
-      cursor: pointer;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      transition: all 0.2s;
-    `;
-    indicator.textContent = `${analysis.trustScore}%`;
-    indicator.title = 'Click for detailed analysis';
-
-    if (getComputedStyle(card).position === 'static') {
-      card.style.position = 'relative';
-    }
-
-    indicator.addEventListener('mouseenter', () => {
-      indicator.style.transform = 'scale(1.1)';
-    });
-    
-    indicator.addEventListener('mouseleave', () => {
-      indicator.style.transform = 'scale(1)';
-    });
-
-    indicator.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      const rect = indicator.getBoundingClientRect();
-      showDetailedAnalysis(analysis, rect.left + rect.width/2, rect.bottom + 10);
-    });
-
-    card.appendChild(indicator);
-  }
-
-  function getTrustColor(score) {
-    if (score >= 75) return '#22c55e';
-    if (score >= 50) return '#eab308';
-    return '#ef4444';
-  }
-
-  function clearJobIndicators() {
-    document.querySelectorAll('.ai-job-indicator').forEach(el => el.remove());
-  }
-
-  // ==================== ANALYSIS FUNCTIONS ====================
-
-  function performAnalysis(text) {
-    const cacheKey = text.substring(0, 200);
-    if (analysisCache.has(cacheKey)) {
-      return analysisCache.get(cacheKey);
-    }
-
-    const type = detectType(text);
-    let analysis;
-    
-    if (type === 'job_listing') {
-      analysis = analyzeJob(text);
-    } else if (type === 'resume') {
-      analysis = analyzeResume(text);
-    } else {
-      analysis = { type: 'unknown' };
-    }
-    
-    analysisCache.set(cacheKey, analysis);
-    return analysis;
-  }
-
-  // ==================== TOOLTIP SYSTEM ====================
-
-  function createTooltip() {
-    if (tooltip) return;
-
-    tooltip = document.createElement('div');
-    tooltip.id = 'ai-analyzer-tooltip';
-    tooltip.style.cssText = `
-      position: fixed;
-      z-index: 99999999;
-      background: white;
-      border-radius: 16px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
-      padding: 20px;
-      min-width: 320px;
-      max-width: 450px;
-      display: none;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 14px;
-      color: #1e293b;
-      border: 2px solid #e2e8f0;
-    `;
-    document.body.appendChild(tooltip);
-  }
-
-  function showDetailedAnalysis(analysis, x, y) {
-    if (!tooltip) createTooltip();
-    
-    tooltip.innerHTML = generateDetailedHTML(analysis);
-    tooltip.style.display = 'block';
-    
-    const tooltipRect = tooltip.getBoundingClientRect();
-    let left = x - tooltipRect.width / 2;
-    let top = y + 5;
-
-    if (left < 10) left = 10;
-    if (left + tooltipRect.width > window.innerWidth - 10) {
-      left = window.innerWidth - tooltipRect.width - 10;
-    }
-    if (top + tooltipRect.height > window.innerHeight - 10) {
-      top = y - tooltipRect.height - 45;
-    }
-
-    tooltip.style.left = left + 'px';
-    tooltip.style.top = top + 'px';
-
-    setTimeout(() => {
-      const closeHandler = (e) => {
-        if (!tooltip.contains(e.target) && !e.target.classList.contains('ai-job-indicator')) {
-          hideTooltip();
-          document.removeEventListener('click', closeHandler);
-        }
-      };
-      document.addEventListener('click', closeHandler);
-    }, 100);
-  }
-
-  function showTooltip(x, y, content) {
-    if (!tooltip) createTooltip();
-    
-    tooltip.innerHTML = content;
-    tooltip.style.display = 'block';
-    
-    const tooltipRect = tooltip.getBoundingClientRect();
-    let left = x - tooltipRect.width / 2;
-    let top = y - tooltipRect.height - 10;
-
-    if (left < 10) left = 10;
-    if (left + tooltipRect.width > window.innerWidth - 10) {
-      left = window.innerWidth - tooltipRect.width - 10;
-    }
-    if (top < 10) top = y + 20;
-
-    tooltip.style.left = left + 'px';
-    tooltip.style.top = top + 'px';
-  }
-
-  function hideTooltip() {
-    if (tooltip) {
-      tooltip.style.display = 'none';
-    }
-  }
-
-  // ==================== EVENT LISTENERS ====================
-
-  function attachListeners() {
-    document.addEventListener('mouseover', handleMouseOver);
-    document.addEventListener('mouseout', handleMouseOut);
-  }
-
-  function removeListeners() {
-    document.removeEventListener('mouseover', handleMouseOver);
-    document.removeEventListener('mouseout', handleMouseOut);
-  }
-
-  let hoverTimeout;
-  function handleMouseOver(e) {
-    if (!isEnabled) return;
-
-    clearTimeout(hoverTimeout);
-    hoverTimeout = setTimeout(() => {
-      const element = e.target;
-      
-      if (element.classList.contains('ai-job-indicator')) return;
-      
-      const text = getElementText(element);
-      
-      if (text.length > 100) {
-        analyzeText(text, e.clientX, e.clientY);
-      }
-    }, 400);
-  }
-
-  function handleMouseOut() {
-    clearTimeout(hoverTimeout);
-  }
-
-  function getElementText(element) {
-    let text = '';
-    
-    if (element.tagName === 'P' || element.tagName === 'DIV' || 
-        element.tagName === 'SECTION' || element.tagName === 'ARTICLE' ||
-        element.tagName === 'SPAN') {
-      text = element.innerText || element.textContent;
-    }
-    
-    return text.trim().substring(0, 3000);
-  }
-
-  function analyzeText(text, x, y) {
-    const analysis = performAnalysis(text);
-    
-    if (analysis.type === 'unknown') return;
-
-    const tooltipContent = generateTooltipHTML(analysis);
-    showTooltip(x, y, tooltipContent);
-  }
-
-  // ==================== HTML GENERATION ====================
-
   function generateTooltipHTML(analysis) {
     if (analysis.type === 'job_listing') {
+      const trustLevel = getTrustLevel(analysis.trustScore);
+      
       return `
         <div style="display: flex; align-items: center; margin-bottom: 12px;">
-          <div style="font-size: 22px; margin-right: 10px;">💼</div>
+          <div style="font-size: 20px; margin-right: 8px;">🛡️</div>
           <div>
-            <div style="font-weight: 700; color: #1e293b; font-size: 16px;">Job Listing</div>
+            <div style="font-weight: 600; color: #1e293b;">Job Listing</div>
             <div style="font-size: 11px; color: #64748b;">AI Analysis</div>
           </div>
         </div>
         
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-          <span style="font-size: 13px; color: #64748b; font-weight: 500;">Trust Score</span>
-          <span style="font-size: 24px; font-weight: 800; color: ${getTrustColor(analysis.trustScore)};">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <span style="font-size: 12px; color: #64748b;">Trust Score</span>
+          <span style="font-size: 18px; font-weight: 700; color: ${trustLevel.color};">
             ${analysis.trustScore}%
           </span>
         </div>
         
-        <div style="background: #f1f5f9; border-radius: 8px; height: 8px; overflow: hidden; margin-bottom: 14px;">
-          <div style="background: ${getTrustColor(analysis.trustScore)}; height: 100%; width: ${analysis.trustScore}%; transition: width 0.3s;"></div>
+        <div style="background: #f1f5f9; border-radius: 8px; height: 6px; overflow: hidden; margin-bottom: 12px;">
+          <div style="background: ${trustLevel.color}; height: 100%; width: ${analysis.trustScore}%; transition: width 0.3s;"></div>
         </div>
         
         ${analysis.flags.length > 0 ? `
-          <div style="background: #fef2f2; border: 1.5px solid #fecaca; border-radius: 10px; padding: 12px; font-size: 12px; margin-bottom: 8px;">
-            <div style="font-weight: 700; color: #991b1b; margin-bottom: 8px; font-size: 13px;">⚠️ Risk Factors (${analysis.flags.length})</div>
-            ${analysis.flags.slice(0, 4).map(flag => `<div style="color: #dc2626; margin-bottom: 4px; line-height: 1.4;">• ${flag}</div>`).join('')}
-            ${analysis.flags.length > 4 ? `<div style="color: #dc2626; margin-top: 4px; font-style: italic;">+ ${analysis.flags.length - 4} more issues</div>` : ''}
+          <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px; font-size: 12px;">
+            <div style="font-weight: 600; color: #991b1b; margin-bottom: 6px;">⚠️ Risk Factors:</div>
+            ${analysis.flags.slice(0, 5).map(flag => `<div style="color: #dc2626; margin-left: 12px;">• ${flag}</div>`).join('')}
+            ${analysis.flags.length > 5 ? `<div style="color: #dc2626; margin-left: 12px;">• +${analysis.flags.length - 5} more</div>` : ''}
           </div>
         ` : `
-          <div style="background: #f0fdf4; border: 1.5px solid #bbf7d0; border-radius: 10px; padding: 12px; font-size: 12px; color: #166534; margin-bottom: 8px;">
-            <strong>✓ No major risk factors detected</strong>
+          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px; font-size: 12px; color: #166534;">
+            ✓ No risk factors detected
           </div>
         `}
-        
-        ${analysis.positives && analysis.positives.length > 0 ? `
-          <div style="font-size: 11px; color: #22c55e; margin-top: 8px;">
-            ${analysis.positives.slice(0, 2).join(' • ')}
-          </div>
-        ` : ''}
-        
-        <div style="font-size: 10px; color: #94a3b8; text-align: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0;">
-          Click job badge for full details
-        </div>
       `;
     } else if (analysis.type === 'resume') {
       return `
@@ -1180,12 +1048,95 @@
         ` : ''}
         
         ${analysis.redFlags && analysis.redFlags.length > 0 ? `
-          <div style="background: #fef2f2; border: 1.5px solid #fecaca; border-radius: 10px; padding: 12px; font-size: 12px;">
-            <div style="font-weight: 700; color: #991b1b; margin-bottom: 8px; font-size: 13px;">⚠️ Red Flags (${analysis.redFlags.length})</div>
-            ${analysis.redFlags.slice(0, 3).map(flag => `<div style="color: #dc2626; margin-bottom: 4px; line-height: 1.4;">${flag}</div>`).join('')}
-            ${analysis.redFlags.length > 3 ? `<div style="color: #dc2626; margin-top: 4px; font-style: italic;">+ ${analysis.redFlags.length - 3} more</div>` : ''}
+          <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px; font-size: 12px;">
+            <div style="font-weight: 600; color: #991b1b; margin-bottom: 6px;">⚠️ Red Flags:</div>
+            ${analysis.redFlags.slice(0, 4).map(flag => `<div style="color: #dc2626; margin-left: 12px;">• ${flag}</div>`).join('')}
+            ${analysis.redFlags.length > 4 ? `<div style="color: #dc2626; margin-left: 12px;">• +${analysis.redFlags.length - 4} more</div>` : ''}
           </div>
         ` : ''}
+      `;
+    }
+  }
+
+  function generateDetailedHTML(analysis) {
+    if (analysis.type === 'job_listing') {
+      const trustLevel = getTrustLevel(analysis.trustScore);
+      
+      return `
+        <div style="display: flex; align-items: center; margin-bottom: 16px;">
+          <div style="font-size: 24px; margin-right: 12px;">🛡️</div>
+          <div>
+            <div style="font-weight: 700; font-size: 18px; color: #1e293b;">Job Listing Analysis</div>
+            <div style="font-size: 12px; color: #64748b;">Complete AI Evaluation</div>
+          </div>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+          <div style="text-align: center; color: white;">
+            <div style="font-size: 14px; margin-bottom: 8px; opacity: 0.9;">Trust Score</div>
+            <div style="font-size: 36px; font-weight: 700;">${analysis.trustScore}%</div>
+            <div style="font-size: 12px; margin-top: 4px; opacity: 0.9;">${trustLevel.label}</div>
+          </div>
+        </div>
+        
+        ${analysis.flags.length > 0 ? `
+          <div style="margin-bottom: 16px;">
+            <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px; font-size: 14px;">🚨 Risk Factors Detected</div>
+            <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px;">
+              ${analysis.flags.map(flag => `<div style="color: #dc2626; margin-bottom: 6px; font-size: 13px;">• ${flag}</div>`).join('')}
+            </div>
+          </div>
+        ` : `
+          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 12px; font-size: 13px; color: #166534; margin-bottom: 16px;">
+            ✓ No major risk factors detected
+          </div>
+        `}
+        
+        <div style="font-size: 11px; color: #64748b; text-align: center; padding-top: 12px; border-top: 1px solid #e2e8f0;">
+          AI-powered analysis • Always verify independently
+        </div>
+      `;
+    } else if (analysis.type === 'resume') {
+      const scoreLevel = getScoreLevel(analysis.score);
+      
+      return `
+        <div style="display: flex; align-items: center; margin-bottom: 16px;">
+          <div style="font-size: 24px; margin-right: 12px;">📄</div>
+          <div>
+            <div style="font-weight: 700; font-size: 18px; color: #1e293b;">Resume Analysis</div>
+            <div style="font-size: 12px; color: #64748b;">Complete Profile Evaluation</div>
+          </div>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%); border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+          <div style="text-align: center; color: white;">
+            <div style="font-size: 14px; margin-bottom: 8px; opacity: 0.9;">Profile Strength</div>
+            <div style="font-size: 36px; font-weight: 700;">${analysis.score}%</div>
+            <div style="font-size: 12px; margin-top: 4px; opacity: 0.9;">${scoreLevel.label}</div>
+          </div>
+        </div>
+        
+        ${analysis.highlights.length > 0 ? `
+          <div style="margin-bottom: 16px;">
+            <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px; font-size: 14px;">✨ Key Highlights</div>
+            <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px;">
+              ${analysis.highlights.map(h => `<div style="color: #2563eb; margin-bottom: 6px; font-size: 13px;">• ${h}</div>`).join('')}
+            </div>
+          </div>
+        ` : ''}
+        
+        ${analysis.redFlags && analysis.redFlags.length > 0 ? `
+          <div style="margin-bottom: 16px;">
+            <div style="font-weight: 600; color: #1e293b; margin-bottom: 8px; font-size: 14px;">⚠️ Areas for Improvement</div>
+            <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px;">
+              ${analysis.redFlags.map(flag => `<div style="color: #dc2626; margin-bottom: 6px; font-size: 13px;">• ${flag}</div>`).join('')}
+            </div>
+          </div>
+        ` : ''}
+        
+        <div style="font-size: 11px; color: #64748b; text-align: center; padding-top: 12px; border-top: 1px solid #e2e8f0;">
+          AI-powered analysis • Always verify independently
+        </div>
       `;
     }
   }
@@ -1281,12 +1232,25 @@
     return 'High Risk - Avoid';
   }
 
-  function getScoreLabel(score) {
-    if (score >= 75) return 'Strong Profile';
-    if (score >= 55) return 'Good Profile';
-    if (score >= 35) return 'Needs Improvement';
-    return 'Weak Profile';
-  }
+  function analyzeFullPage() {
+    const elements = document.querySelectorAll('p, div[class*="job"], div[class*="resume"], article, section');
+    let analyzed = 0;
+
+    elements.forEach(el => {
+      const text = getElementText(el);
+      if (text.length > 100) {
+        const analysis = performAnalysis(text);
+        if (analysis.type !== 'unknown') {
+          el.style.outline = '2px solid #667eea';
+          el.style.outlineOffset = '2px';
+          analyzed++;
+          
+          setTimeout(() => {
+            el.style.outline = '';
+          }, 3000);
+        }
+      }
+    });
 
   function getScoreColor(score) {
     if (score >= 75) return '#22c55e';
@@ -1313,7 +1277,7 @@
       font-weight: 600;
       color: #1e293b;
       border-left: 4px solid #667eea;
-      animation: slideInRight 0.3s ease-out;
+      animation: slideIn 0.3s ease-out;
     `;
     notif.textContent = message;
     document.body.appendChild(notif);
@@ -1326,62 +1290,22 @@
     }, 3000);
   }
 
-  function showLoadingNotification(message) {
-    const notif = document.createElement('div');
-    notif.id = 'ai-loading-notif';
-    notif.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: white;
-      padding: 16px 24px;
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-      z-index: 99999999;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 14px;
-      font-weight: 600;
-      color: #1e293b;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    `;
-    
-    const spinner = document.createElement('div');
-    spinner.style.cssText = `
-      width: 20px;
-      height: 20px;
-      border: 3px solid #e2e8f0;
-      border-top-color: #667eea;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    `;
-    
-    notif.appendChild(spinner);
-    notif.appendChild(document.createTextNode(message));
-    
-    const existing = document.getElementById('ai-loading-notif');
-    if (existing) existing.remove();
-    
-    document.body.appendChild(notif);
-  }
-
   function showBatchNotification(message) {
     const notif = document.createElement('div');
     notif.style.cssText = `
       position: fixed;
-      bottom: 24px;
+      bottom: 20px;
       left: 50%;
       transform: translateX(-50%);
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       color: white;
-      padding: 14px 28px;
-      border-radius: 28px;
-      box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
-      z-index: 99999999;
+      padding: 12px 24px;
+      border-radius: 24px;
+      box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
+      z-index: 999999;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       font-size: 14px;
-      font-weight: 700;
+      font-weight: 600;
       animation: slideUp 0.3s ease-out;
     `;
     notif.textContent = message;
@@ -1393,33 +1317,6 @@
       notif.style.transform = 'translateX(-50%) translateY(20px)';
       setTimeout(() => notif.remove(), 300);
     }, 4000);
-  }
-
-  function analyzeFullPage() {
-    const elements = document.querySelectorAll('p, div, article, section');
-    let analyzed = 0;
-
-    elements.forEach(el => {
-      const text = getElementText(el);
-      if (text.length > 150) {
-        const analysis = performAnalysis(text);
-        if (analysis.type !== 'unknown') {
-          el.style.outline = '3px solid #667eea';
-          el.style.outlineOffset = '3px';
-          analyzed++;
-          
-          setTimeout(() => {
-            el.style.outline = '';
-          }, 3000);
-        }
-      }
-    });
-
-    if (analyzed > 0) {
-      showNotification(`✅ Found ${analyzed} items on this page`);
-    } else {
-      showNotification('ℹ️ No job listings or resumes detected');
-    }
   }
 
 })();

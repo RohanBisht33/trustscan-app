@@ -1,7 +1,5 @@
-const browser = self.browser || self.chrome;
-
 browser.runtime.onInstalled.addListener(function() {
-  console.log('🚀 AI Job & Resume Analyzer installed successfully!');
+  console.log('AI Job & Resume Analyzer installed!');
   
   browser.storage.local.set({
     extensionEnabled: true,
