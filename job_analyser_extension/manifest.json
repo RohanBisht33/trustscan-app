@@ -1,49 +1,80 @@
 {
   "manifest_version": 3,
   "name": "AI Job & Resume Analyzer",
-  "version": "1.0.0",
-  "description": "Intelligent analysis of job listings and resumes with trust scoring and risk detection",
+  "version": "2.0.0",
+  "description": "Intelligent analysis of job listings and resumes with AI-powered trust scoring and risk detection",
+  
   "permissions": [
     "activeTab",
     "storage",
     "scripting"
   ],
+  
   "host_permissions": [
-    "http://localhost:5000/*",
     "*://*.linkedin.com/*",
     "*://*.internshala.com/*",
     "*://*.naukri.com/*",
     "*://*.indeed.com/*",
-    "*://*.glassdoor.com/*"
+    "*://*.glassdoor.com/*",
+    "*://*.monster.com/*",
+    "*://*.simplyhired.com/*",
+    "*://*.careerbuilder.com/*",
+    "<all_urls>"
   ],
+  
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
-    }
+    },
+    "default_title": "AI Job & Resume Analyzer"
   },
+  
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["browser-polyfill.js", "pdf-parser.js", "content.js"],
+      "js": ["content.js"],
       "css": ["content.css"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
+  
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
+  
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; worker-src 'self' blob:;"
+  },
+  
   "web_accessible_resources": [
     {
-      "resources": ["pdf.worker.js"],
+      "resources": ["icons/*.png"],
       "matches": ["<all_urls>"]
     }
   ],
-  "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
-  }
+  
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ai-job-analyzer@example.com",
+      "strict_min_version": "109.0"
+    }
+  },
+  
+  "minimum_chrome_version": "88",
+  
+  "author": "Your Name",
+  "homepage_url": "https://github.com/yourusername/ai-job-analyzer"
 }
