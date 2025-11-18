@@ -11,6 +11,7 @@ browser.runtime.onInstalled.addListener(function() {
 
 browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   if (request.action === 'analyzeWithAPI') {
+    // CRITICAL: Must return true to keep channel open for async response
     fetch('http://localhost:5000/analyze', {
       method: 'POST',
       headers: {
@@ -22,6 +23,9 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     .then(data => sendResponse({ success: true, data: data }))
     .catch(error => sendResponse({ success: false, error: error.message }));
     
-    return true;
+    return true; // Keep message channel open
   }
+  
+  // If no matching action, return false
+  return false;
 });

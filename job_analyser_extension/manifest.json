@@ -1,24 +1,15 @@
 {
   "manifest_version": 3,
   "name": "AI Job & Resume Analyzer",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Intelligent analysis of job listings and resumes with AI-powered trust scoring and risk detection",
   
   "permissions": [
     "activeTab",
-    "storage",
-    "scripting"
+    "storage"
   ],
   
   "host_permissions": [
-    "*://*.linkedin.com/*",
-    "*://*.internshala.com/*",
-    "*://*.naukri.com/*",
-    "*://*.indeed.com/*",
-    "*://*.glassdoor.com/*",
-    "*://*.monster.com/*",
-    "*://*.simplyhired.com/*",
-    "*://*.careerbuilder.com/*",
     "<all_urls>"
   ],
   
@@ -55,10 +46,6 @@
     "128": "icons/icon128.png"
   },
   
-  "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self';"
-  },
-  
   "web_accessible_resources": [
     {
       "resources": ["icons/*.png"],
@@ -73,8 +60,5 @@
     }
   },
   
-  "minimum_chrome_version": "88",
-  
-  "author": "Your Name",
-  "homepage_url": "https://github.com/yourusername/ai-job-analyzer"
+  "minimum_chrome_version": "88"
 }

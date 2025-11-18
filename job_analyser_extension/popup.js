@@ -12,9 +12,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Check if current tab is compatible
   browser.tabs.query({active: true, currentWindow: true}, function(tabs) {
-    const currentTab = tabs[0];
-    if (!isCompatibleTab(currentTab.url)) {
-      disableAnalyzeButton('Not available on this page');
+    if (tabs[0]) {
+      const currentTab = tabs[0];
+      if (!isCompatibleTab(currentTab.url)) {
+        disableAnalyzeButton('Not available on this page');
+      }
     }
   });
 
@@ -22,25 +24,32 @@ document.addEventListener('DOMContentLoaded', function() {
     if (analyzeBtn.disabled) return;
 
     browser.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      if (!tabs[0]) return;
+      
       const currentTab = tabs[0];
       
       // Check if tab is compatible
       if (!isCompatibleTab(currentTab.url)) {
-        showError('Cannot analyze this page. Please navigate to a website.');
+        showError('Cannot analyze this page');
         return;
       }
 
-      // Send message with error handling
-      browser.tabs.sendMessage(currentTab.id, {action: 'analyzeFullPage'})
-        .then(() => {
-          window.close();
-        })
-        .catch((error) => {
-          console.error('Message sending failed:', error);
+      // Use callback-based approach (Manifest V3 compatible)
+      browser.tabs.sendMessage(
+        currentTab.id, 
+        {action: 'analyzeFullPage'},
+        function(response) {
+          // Check for errors
+          if (browser.runtime.lastError) {
+            console.log('Content script not ready:', browser.runtime.lastError.message);
+            showError('Please refresh the page');
+            return;
+          }
           
-          // Try to inject content script if it's not loaded
-          injectContentScriptAndAnalyze(currentTab.id);
-        });
+          // Success
+          window.close();
+        }
+      );
     });
   });
 
@@ -54,16 +63,24 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Notify content script if it exists
         browser.tabs.query({active: true, currentWindow: true}, function(tabs) {
+          if (!tabs[0]) return;
+          
           const currentTab = tabs[0];
           
           if (isCompatibleTab(currentTab.url)) {
-            browser.tabs.sendMessage(currentTab.id, {
-              action: 'toggleExtension',
-              enabled: newState
-            }).catch(() => {
-              // Silently fail if content script not loaded
-              console.log('Content script not ready, settings saved');
-            });
+            browser.tabs.sendMessage(
+              currentTab.id,
+              {
+                action: 'toggleExtension',
+                enabled: newState
+              },
+              function() {
+                // Ignore errors silently
+                if (browser.runtime.lastError) {
+                  console.log('Settings saved, content script will update on next load');
+                }
+              }
+            );
           }
         });
       });
@@ -88,7 +105,15 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!url) return false;
     
     // Block extension on browser internal pages
-    const incompatibleProtocols = ['chrome://', 'chrome-extension://', 'edge://', 'about:', 'file://'];
+    const incompatibleProtocols = [
+      'chrome://', 
+      'chrome-extension://', 
+      'edge://', 
+      'about:', 
+      'file://',
+      'view-source:',
+      'data:'
+    ];
     
     return !incompatibleProtocols.some(protocol => url.startsWith(protocol));
   }
@@ -101,34 +126,15 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function showError(message) {
-    // Create temporary error notification
     const originalText = analyzeBtn.textContent;
+    const originalBg = analyzeBtn.style.background;
+    
     analyzeBtn.textContent = `❌ ${message}`;
     analyzeBtn.style.background = '#ef4444';
     
     setTimeout(() => {
       analyzeBtn.textContent = originalText;
-      analyzeBtn.style.background = '';
+      analyzeBtn.style.background = originalBg;
     }, 2500);
-  }
-
-  function injectContentScriptAndAnalyze(tabId) {
-    // Try to inject content script dynamically
-    browser.scripting.executeScript({
-      target: { tabId: tabId },
-      files: ['content.js']
-    })
-    .then(() => {
-      // Wait a moment for script to initialize
-      setTimeout(() => {
-        browser.tabs.sendMessage(tabId, {action: 'analyzeFullPage'})
-          .then(() => window.close())
-          .catch(() => showError('Please refresh the page'));
-      }, 500);
-    })
-    .catch((error) => {
-      console.error('Script injection failed:', error);
-      showError('Please refresh the page and try again');
-    });
   }
 });

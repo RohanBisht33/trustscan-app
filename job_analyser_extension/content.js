@@ -1,14 +1,473 @@
-// ==================== IMPROVED TYPE DETECTION ====================
-// This replaces the detectType() function in content.js
+// ==================== GLOBAL VARIABLES ====================
+const browser = window.browser || window.chrome;
+let pdfJsLoaded = false;
+let extensionEnabled = true;
+let analyzedElements = new WeakSet();
 
+// ==================== MESSAGE LISTENER ====================
+browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+  console.log('📨 Message received:', request.action);
+  
+  if (request.action === 'analyzeFullPage') {
+    analyzeCurrentPage();
+    sendResponse({status: 'Analysis started'});
+    return true;
+  }
+  
+  if (request.action === 'toggleExtension') {
+    extensionEnabled = request.enabled;
+    console.log('🔄 Extension toggled:', extensionEnabled);
+    
+    if (extensionEnabled) {
+      showNotification('✅ Extension Enabled');
+      analyzeCurrentPage();
+    } else {
+      showNotification('⏸️ Extension Disabled');
+      removeAllIndicators();
+    }
+    
+    sendResponse({status: 'toggled', enabled: extensionEnabled});
+    return true;
+  }
+  
+  return false;
+});
+
+// ==================== INITIALIZATION ====================
+(function init() {
+  console.log('🚀 AI Job & Resume Analyzer loaded');
+  
+  // Check if extension is enabled
+  browser.storage.local.get(['extensionEnabled'], function(result) {
+    extensionEnabled = result.extensionEnabled !== false;
+    
+    if (extensionEnabled) {
+      console.log('✅ Extension is enabled');
+      
+      // Wait for page to be fully loaded
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startAnalysis);
+      } else {
+        startAnalysis();
+      }
+    } else {
+      console.log('⏸️ Extension is disabled');
+    }
+  });
+})();
+
+function startAnalysis() {
+  // Setup PDF support
+  setupPDFSupport();
+  
+  // Analyze current page after a short delay
+  setTimeout(() => {
+    analyzeCurrentPage();
+  }, 1000);
+}
+
+// ==================== MAIN ANALYSIS FUNCTION ====================
+function analyzeCurrentPage() {
+  if (!extensionEnabled) {
+    console.log('⏸️ Analysis skipped - extension disabled');
+    return;
+  }
+  
+  console.log('🔍 Analyzing current page...');
+  
+  const pageText = extractPageText();
+  
+  if (pageText.length < 100) {
+    console.log('⚠️ Page text too short, skipping analysis');
+    return;
+  }
+  
+  const type = detectType(pageText);
+  console.log('📊 Detected type:', type);
+  
+  if (type === 'job_listing') {
+    showNotification('💼 Job Listing Detected!', 'success');
+    highlightJobListings();
+  } else if (type === 'resume') {
+    showNotification('📄 Resume Detected!', 'info');
+  } else {
+    console.log('❓ Content type unclear');
+  }
+  
+  // Analyze specific job cards on job portals
+  analyzeJobCards();
+}
+
+function extractPageText() {
+  // Remove script and style content
+  const clone = document.body.cloneNode(true);
+  clone.querySelectorAll('script, style, noscript').forEach(el => el.remove());
+  
+  return clone.innerText || clone.textContent || '';
+}
+
+function highlightJobListings() {
+  // Find common job listing containers
+  const selectors = [
+    '[class*="job"]',
+    '[class*="listing"]',
+    '[class*="card"]',
+    '[data-job-id]',
+    'article',
+    '.search-card'
+  ];
+  
+  const elements = document.querySelectorAll(selectors.join(','));
+  
+  elements.forEach(el => {
+    if (analyzedElements.has(el)) return;
+    
+    const text = el.innerText;
+    if (text && text.length > 100 && text.length < 5000) {
+      const type = detectType(text);
+      if (type === 'job_listing') {
+        addJobIndicator(el);
+        analyzedElements.add(el);
+      }
+    }
+  });
+}
+
+function analyzeJobCards() {
+  // Specific selectors for popular job sites
+  const jobCardSelectors = {
+    'linkedin.com': '.job-card-container, .jobs-search-results__list-item',
+    'naukri.com': '.jobTuple, .jobTupleHeader',
+    'internshala.com': '.individual_internship',
+    'indeed.com': '.job_seen_beacon, .jobsearch-SerpJobCard',
+    'glassdoor.com': '.react-job-listing'
+  };
+  
+  const hostname = window.location.hostname;
+  const selector = Object.keys(jobCardSelectors).find(key => hostname.includes(key));
+  
+  if (selector && jobCardSelectors[selector]) {
+    const cards = document.querySelectorAll(jobCardSelectors[selector]);
+    console.log(`📋 Found ${cards.length} job cards on ${hostname}`);
+    
+    cards.forEach(card => {
+      if (!analyzedElements.has(card)) {
+        addJobIndicator(card);
+        analyzedElements.add(card);
+      }
+    });
+  }
+}
+
+// ==================== UI INDICATORS ====================
+function addJobIndicator(element) {
+  // Don't add if already has indicator
+  if (element.querySelector('.ai-job-indicator')) return;
+  
+  const indicator = document.createElement('div');
+  indicator.className = 'ai-job-indicator';
+  indicator.innerHTML = '✨ AI';
+  indicator.style.cssText = `
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    z-index: 1000;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    transition: all 0.2s ease;
+  `;
+  
+  // Make parent position relative if needed
+  const parentPosition = window.getComputedStyle(element).position;
+  if (parentPosition === 'static') {
+    element.style.position = 'relative';
+  }
+  
+  // Add hover effect
+  indicator.addEventListener('mouseenter', () => {
+    indicator.style.transform = 'scale(1.1)';
+    indicator.style.boxShadow = '0 4px 16px rgba(0,0,0,0.3)';
+  });
+  
+  indicator.addEventListener('mouseleave', () => {
+    indicator.style.transform = 'scale(1)';
+    indicator.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+  });
+  
+  // Add click handler for detailed analysis
+  indicator.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const text = element.innerText;
+    const analysis = performAnalysis(text);
+    showAnalysisModal(analysis, element);
+  });
+  
+  element.appendChild(indicator);
+}
+
+function removeAllIndicators() {
+  document.querySelectorAll('.ai-job-indicator').forEach(el => el.remove());
+  analyzedElements = new WeakSet();
+}
+
+// ==================== ANALYSIS LOGIC ====================
+function performAnalysis(text) {
+  const type = detectType(text);
+  
+  // Calculate trust score (0-100)
+  let trustScore = 50;
+  const redFlags = [];
+  const greenFlags = [];
+  
+  // Red flags
+  if (/\b(pay.*upfront|wire transfer|western union|money gram)\b/i.test(text)) {
+    trustScore -= 30;
+    redFlags.push('Payment required upfront');
+  }
+  
+  if (/\b(guaranteed.*income|get rich quick|easy money)\b/i.test(text)) {
+    trustScore -= 25;
+    redFlags.push('Unrealistic promises');
+  }
+  
+  if (/\b(work from home|no experience required).*\b.*\$\d{3,}/i.test(text)) {
+    trustScore -= 20;
+    redFlags.push('Suspicious work-from-home offer');
+  }
+  
+  if (!/@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/.test(text) && type === 'job_listing') {
+    trustScore -= 15;
+    redFlags.push('No valid company email');
+  }
+  
+  // Green flags
+  if (/\b(company website|official site|career page)\b/i.test(text)) {
+    trustScore += 10;
+    greenFlags.push('Has company website');
+  }
+  
+  if (/\b(benefits|insurance|401k|pto|paid time off)\b/i.test(text)) {
+    trustScore += 10;
+    greenFlags.push('Mentions employee benefits');
+  }
+  
+  if (/\b(interview process|application process)\b/i.test(text)) {
+    trustScore += 5;
+    greenFlags.push('Clear hiring process');
+  }
+  
+  // Keep score in 0-100 range
+  trustScore = Math.max(0, Math.min(100, trustScore));
+  
+  return {
+    type,
+    trustScore,
+    redFlags,
+    greenFlags,
+    summary: generateSummary(type, trustScore, text)
+  };
+}
+
+function generateSummary(type, trustScore, text) {
+  if (type === 'job_listing') {
+    if (trustScore >= 75) {
+      return 'This appears to be a legitimate job posting with no major red flags.';
+    } else if (trustScore >= 50) {
+      return 'This job posting seems reasonable but exercise caution.';
+    } else {
+      return '⚠️ This job posting has several red flags. Proceed with extreme caution.';
+    }
+  } else if (type === 'resume') {
+    const wordCount = text.split(/\s+/).length;
+    return `Resume detected with approximately ${wordCount} words.`;
+  }
+  
+  return 'Content type unclear.';
+}
+
+// ==================== NOTIFICATION SYSTEM ====================
+function showNotification(message, type = 'info') {
+  // Remove existing notifications
+  const existing = document.getElementById('ai-analyzer-notification');
+  if (existing) existing.remove();
+  
+  const notif = document.createElement('div');
+  notif.id = 'ai-analyzer-notification';
+  notif.textContent = message;
+  
+  const colors = {
+    success: '#10b981',
+    info: '#3b82f6',
+    warning: '#f59e0b',
+    error: '#ef4444'
+  };
+  
+  notif.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: ${colors[type] || colors.info};
+    color: white;
+    padding: 16px 24px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 999999;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    animation: slideInRight 0.3s ease-out;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  `;
+  
+  document.body.appendChild(notif);
+  
+  setTimeout(() => {
+    notif.style.animation = 'fadeOut 0.3s ease-out';
+    setTimeout(() => notif.remove(), 300);
+  }, 3000);
+}
+
+function showLoadingNotification(message) {
+  const notif = document.createElement('div');
+  notif.id = 'ai-loading-notif';
+  notif.innerHTML = `
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <div style="width: 20px; height: 20px; border: 3px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+      <span>${message}</span>
+    </div>
+  `;
+  
+  notif.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #3b82f6;
+    color: white;
+    padding: 16px 24px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 999999;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  `;
+  
+  document.body.appendChild(notif);
+}
+
+// ==================== MODAL SYSTEM ====================
+function showAnalysisModal(analysis, sourceElement) {
+  // Remove existing modal
+  const existing = document.getElementById('ai-analysis-modal');
+  if (existing) existing.remove();
+  
+  const modal = document.createElement('div');
+  modal.id = 'ai-analysis-modal';
+  
+  const trustColor = analysis.trustScore >= 75 ? '#10b981' : 
+                    analysis.trustScore >= 50 ? '#f59e0b' : '#ef4444';
+  
+  modal.innerHTML = `
+    <div style="
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 9999999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.2s ease-out;
+    " id="modal-backdrop">
+      <div style="
+        background: white;
+        border-radius: 20px;
+        padding: 32px;
+        max-width: 500px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        animation: slideUp 0.3s ease-out;
+      " onclick="event.stopPropagation()">
+        <h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+          ${analysis.type === 'job_listing' ? '💼' : '📄'} Analysis Results
+        </h2>
+        
+        <div style="margin-bottom: 24px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="font-weight: 600; color: #475569;">Trust Score</span>
+            <span style="font-weight: 700; color: ${trustColor};">${analysis.trustScore}/100</span>
+          </div>
+          <div style="background: #e2e8f0; border-radius: 10px; height: 10px; overflow: hidden;">
+            <div style="background: ${trustColor}; height: 100%; width: ${analysis.trustScore}%; transition: width 0.5s ease;"></div>
+          </div>
+        </div>
+        
+        ${analysis.redFlags.length > 0 ? `
+          <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
+            <h3 style="margin: 0 0 12px 0; color: #991b1b; font-size: 14px; font-weight: 700;">⚠️ Red Flags</h3>
+            <ul style="margin: 0; padding-left: 20px; color: #7f1d1d;">
+              ${analysis.redFlags.map(flag => `<li style="margin: 4px 0;">${flag}</li>`).join('')}
+            </ul>
+          </div>
+        ` : ''}
+        
+        ${analysis.greenFlags.length > 0 ? `
+          <div style="background: #dcfce7; border-left: 4px solid #10b981; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
+            <h3 style="margin: 0 0 12px 0; color: #065f46; font-size: 14px; font-weight: 700;">✅ Positive Indicators</h3>
+            <ul style="margin: 0; padding-left: 20px; color: #047857;">
+              ${analysis.greenFlags.map(flag => `<li style="margin: 4px 0;">${flag}</li>`).join('')}
+            </ul>
+          </div>
+        ` : ''}
+        
+        <p style="color: #64748b; line-height: 1.6; margin-bottom: 24px;">${analysis.summary}</p>
+        
+        <button onclick="document.getElementById('ai-analysis-modal').remove()" style="
+          width: 100%;
+          padding: 14px;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          border: none;
+          border-radius: 12px;
+          font-size: 16px;
+          font-weight: 700;
+          cursor: pointer;
+          transition: transform 0.2s;
+        " onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+          Close
+        </button>
+      </div>
+    </div>
+  `;
+  
+  // Close on backdrop click
+  modal.querySelector('#modal-backdrop').addEventListener('click', () => {
+    modal.remove();
+  });
+  
+  document.body.appendChild(modal);
+}
+
+function showPDFAnalysisModal(analysis, text, filename) {
+  showAnalysisModal(analysis, null);
+}
+
+// ==================== TYPE DETECTION ====================
 function detectType(text) {
   const lower = text.toLowerCase();
   let resumeScore = 0;
   let jobScore = 0;
 
-  // CRITICAL: Check for mutually exclusive indicators first
-  
-  // STRONG JOB-ONLY INDICATORS (These almost never appear in resumes)
+  // STRONG JOB-ONLY INDICATORS
   const jobOnlyIndicators = [
     /\b(we are (hiring|looking for|seeking)|join our team|work with us)\b/i,
     /\b(apply (now|here|today)|submit (your )?application)\b/i,
@@ -24,7 +483,7 @@ function detectType(text) {
     /\b(deadline|last date to apply|apply before)\b/i
   ];
 
-  // STRONG RESUME-ONLY INDICATORS (These almost never appear in job postings)
+  // STRONG RESUME-ONLY INDICATORS
   const resumeOnlyIndicators = [
     /\b(my (name is|objective|goal)|i am (a|an)|about me)\b/i,
     /\b(personal (information|details|profile)|contact information)\s*:/i,
@@ -41,162 +500,64 @@ function detectType(text) {
     /github\.com\/\w+/i
   ];
 
-  // Count job-only indicators
+  // Count indicators
   jobOnlyIndicators.forEach(pattern => {
-    if (pattern.test(text)) {
-      jobScore += 10; // Heavy weight for exclusive indicators
-      console.log(`  ðŸ'¼ Job-only match: ${pattern}`);
-    }
+    if (pattern.test(text)) jobScore += 10;
   });
 
-  // Count resume-only indicators
   resumeOnlyIndicators.forEach(pattern => {
-    if (pattern.test(text)) {
-      resumeScore += 10; // Heavy weight for exclusive indicators
-      console.log(`  ðŸ"„ Resume-only match: ${pattern}`);
-    }
+    if (pattern.test(text)) resumeScore += 10;
   });
 
-  // If we have strong exclusive indicators, make early decision
-  if (jobScore >= 20 && resumeScore === 0) {
-    console.log(`ðŸ" Early detection: Job (exclusive indicators)`);
-    return 'job_listing';
-  }
-  if (resumeScore >= 20 && jobScore === 0) {
-    console.log(`ðŸ" Early detection: Resume (exclusive indicators)`);
-    return 'resume';
-  }
+  // Early decision
+  if (jobScore >= 20 && resumeScore === 0) return 'job_listing';
+  if (resumeScore >= 20 && jobScore === 0) return 'resume';
 
-  // CONTEXTUAL INDICATORS (can appear in both, but context matters)
-  
-  // Job-leaning contextual indicators
+  // Contextual indicators
   const jobContextual = [
     { pattern: /\b(requirements?|qualifications?|eligibility)\s*:/i, weight: 3 },
     { pattern: /\b(responsibilities|duties|role description)\s*:/i, weight: 3 },
     { pattern: /\b(must have|should have|required)\s*:/i, weight: 2 },
     { pattern: /\b(preferred|nice to have|bonus)\s*:/i, weight: 2 },
     { pattern: /\b(\d+[\+\-]\s*years? of experience (required|needed))\b/i, weight: 3 },
-    { pattern: /\b(full[\s-]?time|part[\s-]?time|contract|freelance|remote|hybrid)\s+(position|role|job)/i, weight: 3 },
-    { pattern: /\b(competitive salary|market rate compensation)\b/i, weight: 2 },
-    { pattern: /\b(location|office|workplace)\s*:/i, weight: 1 }
+    { pattern: /\b(full[\s-]?time|part[\s-]?time|contract|freelance|remote|hybrid)\s+(position|role|job)/i, weight: 3 }
   ];
 
-  // Resume-leaning contextual indicators
   const resumeContextual = [
     { pattern: /\b(work experience|professional experience|employment history)\s*:/i, weight: 3 },
     { pattern: /\b(education|academic background|qualifications)\s*:/i, weight: 3 },
     { pattern: /\b(skills?|technical skills?|core competencies)\s*:/i, weight: 2 },
     { pattern: /\b(projects?|portfolio|work samples)\s*:/i, weight: 2 },
-    { pattern: /\b(certifications?|training|courses)\s*:/i, weight: 2 },
-    { pattern: /\b(achievements?|accomplishments?|awards)\s*:/i, weight: 2 },
-    { pattern: /\b(intern(ship)?|trainee|co-op) at \w+/i, weight: 2 },
-    { pattern: /\b(b\.?tech|m\.?tech|bachelor|master|phd|mba|bca|mca)\b/i, weight: 2 }
+    { pattern: /\b(certifications?|training|courses)\s*:/i, weight: 2 }
   ];
 
-  // Count contextual indicators
   jobContextual.forEach(({ pattern, weight }) => {
-    if (pattern.test(text)) {
-      jobScore += weight;
-    }
+    if (pattern.test(text)) jobScore += weight;
   });
 
   resumeContextual.forEach(({ pattern, weight }) => {
-    if (pattern.test(text)) {
-      resumeScore += weight;
-    }
+    if (pattern.test(text)) resumeScore += weight;
   });
 
-  // STRUCTURAL ANALYSIS
+  // Structural analysis
+  if (/\b(about (us|the company)|company overview)\b/i.test(text)) jobScore += 3;
   
-  // Job postings often have company descriptions
-  if (/\b(about (us|the company|our company)|company overview|who we are)\b/i.test(text)) {
-    jobScore += 3;
-  }
+  const firstPersonMentions = (text.match(/\b(i |my |me )\b/gi) || []).length;
+  if (firstPersonMentions >= 5) resumeScore += 3;
 
-  // Resumes have contact details in specific format
-  if (/@\w+\.\w+/.test(text) && /\b(\+?\d{10,})\b/.test(text) && text.length < 2000) {
-    resumeScore += 3;
-  }
+  // Length check
+  if (text.length < 150) return 'unknown';
 
-  // Job postings often mention "candidate" or "you"
-  const candidateMentions = (text.match(/\b(candidate|applicant|you will|you would|you should|your role)\b/gi) || []).length;
-  if (candidateMentions >= 3) {
-    jobScore += 2;
-  }
-
-  // Resumes use first-person more
-  const firstPersonMentions = (text.match(/\b(i |my |me |i'm |i've |i'll )\b/gi) || []).length;
-  if (firstPersonMentions >= 5) {
-    resumeScore += 3;
-  }
-
-  // ANTI-CONFUSION MEASURES
-  
-  // If text has "job description" in title but also has resume indicators
-  if (/\b(job description|job posting|job ad)\b/i.test(text)) {
-    if (resumeScore > 0) {
-      console.log(`  âš ï¸ Contains "job description" but has resume indicators - penalizing resume score`);
-      resumeScore = Math.max(0, resumeScore - 8);
-    }
-    jobScore += 5;
-  }
-
-  // If text has "resume" or "CV" in title
-  if (/\b(resume|curriculum vitae|cv)\b/i.test(text.substring(0, 200))) {
-    resumeScore += 5;
-  }
-
-  // Check for timeline patterns (more common in resumes)
-  const timelinePatterns = text.match(/\b(20\d{2}|19\d{2})\s*[-–]\s*(20\d{2}|19\d{2}|present|current)\b/gi);
-  if (timelinePatterns && timelinePatterns.length >= 2) {
-    resumeScore += 3;
-  }
-
-  // LENGTH-BASED HEURISTICS
-  
-  // Very short texts are likely neither
-  if (text.length < 150) {
-    console.log(`ðŸ" Too short (${text.length} chars) - unknown`);
-    return 'unknown';
-  }
-
-  // Job postings are usually 500-3000 chars
-  // Resumes are usually 1000-5000 chars
-  if (text.length > 3000 && resumeScore > jobScore) {
-    resumeScore += 2; // Bonus for longer resume
-  }
-
-  console.log(`ðŸ" Detection scores - Resume: ${resumeScore}, Job: ${jobScore}`);
-
-  // FINAL DECISION with higher thresholds
+  // Final decision
   const scoreDiff = Math.abs(resumeScore - jobScore);
-  const minDiff = 5; // Require significant difference
-
-  if (resumeScore >= 12 && resumeScore > jobScore && scoreDiff >= minDiff) {
-    return 'resume';
-  }
-  if (jobScore >= 12 && jobScore > resumeScore && scoreDiff >= minDiff) {
-    return 'job_listing';
-  }
-  
-  // If scores are too close or too low, return unknown
-  if (scoreDiff < minDiff || (resumeScore < 10 && jobScore < 10)) {
-    console.log(`ðŸ" Unclear - scores too close or too low`);
-    return 'unknown';
-  }
-
-  // Fallback to higher score
-  if (resumeScore > jobScore) return 'resume';
-  if (jobScore > resumeScore) return 'job_listing';
+  if (resumeScore >= 12 && resumeScore > jobScore && scoreDiff >= 5) return 'resume';
+  if (jobScore >= 12 && jobScore > resumeScore && scoreDiff >= 5) return 'job_listing';
   
   return 'unknown';
 }
 
-// ==================== IMPROVED PDF SUPPORT ====================
-// Replace setupPDFSupport() and related functions
-
+// ==================== PDF SUPPORT ====================
 async function setupPDFSupport() {
-  // Only load PDF.js when actually needed
   const hasPDFLinks = document.querySelector('a[href$=".pdf"]') !== null;
   const hasFileInputs = document.querySelector('input[type="file"]') !== null;
   const isPDF = isPDFPage();
@@ -205,42 +566,55 @@ async function setupPDFSupport() {
     await loadPDFJsSafe();
     await analyzePDFPage();
   } else if (hasPDFLinks || hasFileInputs) {
-    // Lazy load when user interacts
     if (hasPDFLinks) monitorPDFLinks();
     if (hasFileInputs) monitorFileUploads();
   }
 }
 
 function isPDFPage() {
-  // More reliable PDF detection
   return (
     document.contentType === 'application/pdf' ||
     window.location.href.toLowerCase().endsWith('.pdf') ||
-    (document.querySelector('embed[type="application/pdf"]') !== null && 
-     document.querySelector('embed[type="application/pdf"]').src)
+    (document.querySelector('embed[type="application/pdf"]') !== null)
   );
+}
+
+async function analyzePDFPage() {
+  try {
+    showLoadingNotification('📄 Analyzing PDF...');
+    const text = await extractTextFromPDF(window.location.href);
+    
+    if (text && text.length > 100) {
+      const analysis = performAnalysis(text);
+      if (analysis.type !== 'unknown') {
+        const loadingNotif = document.getElementById('ai-loading-notif');
+        if (loadingNotif) loadingNotif.remove();
+        
+        showPDFAnalysisModal(analysis, text, 'Current PDF');
+      }
+    }
+  } catch (error) {
+    console.error('PDF page analysis failed:', error);
+  }
 }
 
 async function loadPDFJsSafe() {
   if (pdfJsLoaded) return;
   
   return new Promise((resolve, reject) => {
-    // Check if already loaded
     if (window.pdfjsLib) {
       pdfJsLoaded = true;
       resolve();
       return;
     }
 
-    // Create script with timeout
     const script = document.createElement('script');
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
     script.async = true;
     
     const timeout = setTimeout(() => {
-      console.error('PDF.js loading timeout');
       reject(new Error('PDF.js loading timeout'));
-    }, 10000); // 10 second timeout
+    }, 10000);
 
     script.onload = () => {
       clearTimeout(timeout);
@@ -248,7 +622,7 @@ async function loadPDFJsSafe() {
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 
           'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         pdfJsLoaded = true;
-        console.log('âœ… PDF.js loaded successfully');
+        console.log('✅ PDF.js loaded successfully');
         resolve();
       } else {
         reject(new Error('PDF.js failed to initialize'));
@@ -270,13 +644,12 @@ async function extractTextFromPDF(pdfUrl) {
 
     const loadingTask = window.pdfjsLib.getDocument({
       url: pdfUrl,
-      withCredentials: false // Avoid CORS issues
+      withCredentials: false
     });
     
     const pdf = await loadingTask.promise;
     let fullText = '';
 
-    // Limit to first 10 pages for performance
     const maxPages = Math.min(pdf.numPages, 10);
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
@@ -300,7 +673,6 @@ async function extractTextFromBlob(blob) {
   try {
     await loadPDFJsSafe();
 
-    // Validate blob
     if (!blob || blob.type !== 'application/pdf') {
       throw new Error('Invalid PDF blob');
     }
@@ -308,13 +680,12 @@ async function extractTextFromBlob(blob) {
     const arrayBuffer = await blob.arrayBuffer();
     const loadingTask = window.pdfjsLib.getDocument({ 
       data: arrayBuffer,
-      verbosity: 0 // Suppress console warnings
+      verbosity: 0
     });
     
     const pdf = await loadingTask.promise;
     let fullText = '';
 
-    // Limit to first 10 pages
     const maxPages = Math.min(pdf.numPages, 10);
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
@@ -341,48 +712,47 @@ function monitorPDFLinks() {
       return;
     }
 
-    // Only intercept if not opening in new tab
     if (e.ctrlKey || e.metaKey || e.shiftKey || target.target === '_blank') {
       return;
     }
 
     e.preventDefault();
-    showLoadingNotification('ðŸ"„ Analyzing PDF...');
+    showLoadingNotification('📄 Analyzing PDF...');
     
     try {
-      await loadPDFJsSafe(); // Load PDF.js first
+      await loadPDFJsSafe();
       const text = await extractTextFromPDF(target.href);
+      
+      const loadingNotif = document.getElementById('ai-loading-notif');
+      if (loadingNotif) loadingNotif.remove();
       
       if (text && text.length > 100) {
         const analysis = performAnalysis(text);
         if (analysis.type !== 'unknown') {
           showPDFAnalysisModal(analysis, text, target.href);
         } else {
-          showNotification('âŒ Could not identify content type');
+          showNotification('❓ Could not identify content type', 'warning');
         }
       } else {
-        showNotification('âŒ Could not extract text from PDF');
+        showNotification('❌ Could not extract text from PDF', 'error');
       }
     } catch (error) {
       console.error('PDF analysis failed:', error);
-      showNotification('âŒ Failed to analyze PDF');
+      showNotification('❌ Failed to analyze PDF', 'error');
     }
     
-    // Option to open anyway
     setTimeout(() => {
       const openAnyway = confirm('Open PDF in new tab?');
       if (openAnyway) {
         window.open(target.href, '_blank');
       }
     }, 1000);
-  }, true); // Use capture phase
+  }, true);
 }
 
 function monitorFileUploads() {
-  // Monitor existing file inputs
   document.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
 
-  // Monitor new file inputs with debouncing
   let observerTimeout;
   const observer = new MutationObserver((mutations) => {
     clearTimeout(observerTimeout);
@@ -390,11 +760,15 @@ function monitorFileUploads() {
       mutations.forEach(mutation => {
         mutation.addedNodes.forEach(node => {
           if (node.nodeType === 1) {
-            if (node.matches && node.matches('input[type="file"]')) {
-              attachFileHandler(node);
-            }
-            if (node.querySelectorAll) {
-              node.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
+            try {
+              if (node.matches && node.matches('input[type="file"]')) {
+                attachFileHandler(node);
+              }
+              if (node.querySelectorAll) {
+                node.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
+              }
+            } catch (e) {
+              // ignore nodes that don't support matches/querySelectorAll
             }
           }
         });
@@ -402,9 +776,9 @@ function monitorFileUploads() {
     }, 100); // Debounce for 100ms
   });
 
-  observer.observe(document.body, { 
-    childList: true, 
-    subtree: true 
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
   });
 }
 
@@ -414,43 +788,42 @@ function attachFileHandler(input) {
 
   input.addEventListener('change', async (e) => {
     const file = e.target.files[0];
-    
     if (!file) return;
-    
-    // Check file type and size
+
+    // Validate type and size
     if (file.type !== 'application/pdf') {
-      console.log('Not a PDF file, skipping analysis');
+      console.log('⚠️ Not a PDF file, skipping analysis');
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) { // 5MB limit
-      showNotification('âš ï¸ PDF too large (max 5MB)');
+    if (file.size > 5 * 1024 * 1024) { // 5 MB limit
+      showNotification('⚠️ PDF too large (max 5MB)', 'warning');
       return;
     }
 
-    showLoadingNotification('ðŸ"„ Analyzing uploaded PDF...');
-    
+    showLoadingNotification('📄 Analyzing uploaded PDF...');
+
     try {
-      await loadPDFJsSafe(); // Ensure PDF.js is loaded
+      await loadPDFJsSafe();
       const text = await extractTextFromBlob(file);
-      
+
+      // Remove spinner
+      const loadingNotif = document.getElementById('ai-loading-notif');
+      if (loadingNotif) loadingNotif.remove();
+
       if (text && text.length > 100) {
         const analysis = performAnalysis(text);
         if (analysis.type !== 'unknown') {
           showPDFAnalysisModal(analysis, text, file.name);
         } else {
-          showNotification('âŒ Could not identify content type');
+          showNotification('❓ Could not identify content type', 'warning');
         }
       } else {
-        showNotification('âŒ Could not extract text from PDF');
+        showNotification('❌ Could not extract text from PDF', 'error');
       }
     } catch (error) {
       console.error('File upload analysis failed:', error);
-      showNotification('âŒ Failed to analyze PDF');
-    } finally {
-      // Remove loading notification
-      const loadingNotif = document.getElementById('ai-loading-notif');
-      if (loadingNotif) loadingNotif.remove();
+      showNotification('❌ Failed to analyze PDF', 'error');
     }
   });
 }
