@@ -1,15 +1,14 @@
-@keyframes tooltipFadeIn {
+
+@keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateX(20px);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
   }
 }
 
-@keyframes slideIn {
+@keyframes slideInRight {
   from {
     opacity: 0;
     transform: translateX(20px);
@@ -31,8 +30,14 @@
   }
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 #ai-analyzer-tooltip {
-  animation: tooltipFadeIn 0.2s ease-out;
+  animation: fadeIn 0.2s ease-out;
 }
 
 .ai-job-indicator {
@@ -41,5 +46,5 @@
 
 .ai-job-indicator:hover {
   transform: scale(1.1);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
 }
