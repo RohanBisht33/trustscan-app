@@ -3,6 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <style>
+    :root {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --shell-radius: 28px;
+      --dark-bg: #050914;
+      --dark-card: rgba(13, 17, 30, 0.85);
+      --dark-stroke: rgba(148, 163, 184, 0.2);
+      --dark-text: #f8fafc;
+      --light-bg: #f8fafc;
+      --light-card: rgba(255, 255, 255, 0.9);
+      --light-stroke: rgba(15, 23, 42, 0.08);
+      --light-text: #0f172a;
+      --accent: linear-gradient(120deg, #5eead4, #818cf8);
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -10,213 +24,283 @@
     }
 
     body {
-      width: 400px;
-      min-height: 550px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #fff;
-    }
-
-    .container {
+      width: 380px;
+      min-height: 560px;
       padding: 24px;
+      background: var(--dark-bg);
+      color: var(--dark-text);
     }
 
-    .header {
-      text-align: center;
-      margin-bottom: 28px;
+    body[data-theme="light"] {
+      background: var(--light-bg);
+      color: var(--light-text);
     }
 
-    .header h1 {
-      font-size: 22px;
+    .shell {
+      background: var(--dark-card);
+      border-radius: var(--shell-radius);
+      border: 1px solid var(--dark-stroke);
+      padding: 24px;
+      box-shadow: 0 30px 60px rgba(5, 7, 12, 0.4);
+    }
+
+    body[data-theme="light"] .shell {
+      background: var(--light-card);
+      border-color: var(--light-stroke);
+      box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
+    }
+
+    .hero-pill {
+      display: inline-flex;
+      padding: 4px 14px;
+      border-radius: 999px;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      background: rgba(94, 234, 212, 0.15);
+      color: #5eead4;
+      margin-bottom: 14px;
+    }
+
+    .hero h1 {
+      font-size: 24px;
       font-weight: 800;
       margin-bottom: 6px;
     }
 
-    .header p {
+    .hero p {
       font-size: 13px;
-      opacity: 0.92;
+      color: rgba(226, 232, 240, 0.85);
     }
 
-    .icon-sparkle {
-      font-size: 32px;
-      margin-bottom: 10px;
+    body[data-theme="light"] .hero p {
+      color: rgba(15, 23, 42, 0.7);
+    }
+
+    .mode-toggle {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin: 22px 0;
+    }
+
+    .mode-btn {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 999px;
+      padding: 8px 0;
+      font-size: 13px;
+      font-weight: 600;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .mode-btn.active {
+      border-color: transparent;
+      background: var(--accent);
+      color: #050914;
     }
 
     .card {
-      background: rgba(255, 255, 255, 0.98);
-      border-radius: 18px;
-      padding: 22px;
-      margin-bottom: 18px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 20px;
+      padding: 18px;
+      backdrop-filter: blur(14px);
+      margin-bottom: 16px;
     }
 
-    .card h2 {
-      font-size: 17px;
-      color: #1e293b;
-      margin-bottom: 14px;
-      font-weight: 700;
+    body[data-theme="light"] .card {
+      border-color: rgba(15, 23, 42, 0.08);
     }
 
-    .status {
+    .card-head {
       display: flex;
-      align-items: center;
       justify-content: space-between;
-      padding: 14px;
-      background: #f1f5f9;
-      border-radius: 12px;
-      margin-bottom: 18px;
+      align-items: center;
+      margin-bottom: 12px;
     }
 
-    .status-text {
-      font-size: 15px;
-      color: #475569;
-      font-weight: 600;
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(148, 163, 184, 0.9);
+      margin-bottom: 2px;
     }
 
-    .status-badge {
-      padding: 6px 14px;
-      border-radius: 24px;
+    .status-chip {
+      padding: 6px 12px;
+      border-radius: 999px;
       font-size: 11px;
       font-weight: 700;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      background: rgba(34, 197, 94, 0.18);
+      color: #22c55e;
     }
 
-    .status-badge.active {
-      background: #dcfce7;
-      color: #166534;
+    .status-chip.inactive {
+      background: rgba(248, 113, 113, 0.18);
+      color: #f87171;
     }
 
-    .status-badge.inactive {
-      background: #fee2e2;
-      color: #991b1b;
+    .toggle-switch {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: 14px;
+      font-weight: 600;
+      color: inherit;
     }
 
-    .btn {
+    .toggle-switch input {
+      appearance: none;
+      width: 48px;
+      height: 26px;
+      border-radius: 999px;
+      background: rgba(94, 234, 212, 0.25);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-switch input::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #050914;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch input:checked::after {
+      transform: translateX(22px);
+    }
+
+    body[data-theme="light"] .toggle-switch input::after {
+      background: #fff;
+    }
+
+    .action-btn {
       width: 100%;
       padding: 14px;
+      border-radius: 16px;
       border: none;
-      border-radius: 12px;
       font-size: 15px;
       font-weight: 700;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: transform 0.2s, box-shadow 0.2s;
       margin-bottom: 10px;
     }
 
-    .btn-primary {
-      background: #667eea;
-      color: white;
+    .action-btn.primary {
+      background: var(--accent);
+      color: #050914;
+      box-shadow: 0 12px 30px rgba(94, 234, 212, 0.4);
     }
 
-    .btn-primary:hover {
-      background: #5568d3;
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+    .action-btn.ghost {
+      background: rgba(148, 163, 184, 0.15);
+      color: inherit;
     }
 
-    .btn-secondary {
-      background: #f1f5f9;
-      color: #475569;
+    .action-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      box-shadow: none;
     }
 
-    .btn-secondary:hover {
-      background: #e2e8f0;
-    }
-
-    .info-box {
-      background: rgba(255, 255, 255, 0.15);
-      backdrop-filter: blur(10px);
-      border-left: 3px solid #fff;
-      padding: 14px;
-      border-radius: 10px;
-      font-size: 13px;
-      line-height: 1.6;
-      margin-bottom: 18px;
-    }
-
-    .features {
+    .feature-list {
       list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
       font-size: 13px;
-      color: #64748b;
+      color: rgba(226, 232, 240, 0.9);
     }
 
-    .features li {
-      padding: 8px 0;
-      padding-left: 24px;
-      position: relative;
-      line-height: 1.5;
+    body[data-theme="light"] .feature-list {
+      color: rgba(15, 23, 42, 0.75);
     }
 
-    .features li:before {
-      content: "✓";
-      position: absolute;
-      left: 0;
-      color: #22c55e;
-      font-weight: bold;
-      font-size: 16px;
+    .feature-list li {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .feature-list li span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #5eead4;
+      flex-shrink: 0;
     }
 
     .footer {
       text-align: center;
-      padding-top: 14px;
       font-size: 11px;
-      opacity: 0.85;
+      color: rgba(226, 232, 240, 0.7);
+      margin-top: 12px;
     }
 
-    .version {
-      display: inline-block;
-      padding: 4px 10px;
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 12px;
-      font-size: 10px;
-      margin-top: 8px;
+    body[data-theme="light"] .footer {
+      color: rgba(15, 23, 42, 0.6);
     }
   </style>
 </head>
-<body>
-  <div class="container">
-    <div class="header">
-      <div class="icon-sparkle">✨</div>
-      <h1>AI Job & Resume Analyzer</h1>
-      <p>Powered by Agentic AI Intelligence</p>
+<body data-theme="dark">
+  <div class="shell">
+    <header class="hero">
+      <div class="hero-pill">Agentic mode</div>
+      <h1>Job Sentinel</h1>
+      <p>Live trust scoring for job listings, resumes and PDFs.</p>
+    </header>
+
+    <div class="mode-toggle" role="group" aria-label="Theme switch">
+      <button class="mode-btn active" data-theme-option="dark">Dark</button>
+      <button class="mode-btn" data-theme-option="light">Light</button>
     </div>
 
-    <div class="card">
-      <div class="status">
-        <span class="status-text">Extension Status</span>
-        <span class="status-badge active" id="statusBadge">Active</span>
+    <section class="card status-card">
+      <div class="card-head">
+        <div>
+          <p class="eyebrow">Live status</p>
+          <h2 id="statusCopy">Enabled</h2>
+        </div>
+        <span class="status-chip" id="statusBadge">Active</span>
       </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="extensionToggle" checked>
+        <span class="toggle-label">Agentic AI scanner</span>
+      </label>
+    </section>
 
-      <button class="btn btn-primary" id="analyzeBtn">
-        🔍 Analyze This Page
-      </button>
-      
-      <button class="btn btn-secondary" id="settingsBtn">
-        ⚙️ Toggle Extension
-      </button>
-    </div>
+    <section class="card action-card">
+      <button class="action-btn primary" id="analyzeBtn">Pulse this page</button>
+      <button class="action-btn ghost" id="refreshBtn">Re-run hover insights</button>
+    </section>
 
-    <div class="card">
-      <h2>✨ Features</h2>
-      <ul class="features">
-        <li>Auto-detects job listings on major platforms</li>
-        <li>Analyzes PDF resumes automatically</li>
-        <li>Real-time trust scoring (0-100%)</li>
-        <li>Hover tooltips for instant insights</li>
-        <li>Multi-listing batch analysis</li>
-        <li>Scam and fake job detection</li>
+    <section class="card feature-card">
+      <div class="card-head">
+        <p class="eyebrow">Quick intel</p>
+      </div>
+      <ul class="feature-list">
+        <li><span></span>Hover anywhere on job cards for trust/risk</li>
+        <li><span></span>Resume pulse panel with highlights & score</li>
+        <li><span></span>PDF parsing works for web + local files</li>
+        <li><span></span>Light/Dark UI syncs with hover surfaces</li>
       </ul>
-    </div>
+    </section>
 
-    <div class="info-box">
-      💡 <strong>Supported:</strong> LinkedIn, Internshala, Naukri, Indeed + PDF files
-    </div>
-
-    <div class="footer">
-      Made with AI • Cross-Browser Compatible
-      <div class="version">v1.0.0</div>
-    </div>
+    <footer class="footer">
+      Agentic AI Build v2.1 • LinkedIn, Naukri, Indeed + PDFs
+    </footer>
   </div>
 
   <script src="popup.js"></script>
