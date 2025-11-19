@@ -115,9 +115,21 @@ function analyzeCurrentPage() {
     removeResumeInsightsPanel();
     showNotification('💼 Job Listing Detected!', 'success');
     highlightJobListings();
-  } else if (type === 'resume') {
+    // Also check if entire page is a job listing
+    if (pageText.length > 500) {
+      const pageAnalysis = performAnalysis(pageText);
+      if (pageAnalysis.type === 'job_listing' || isLikelyJobText(pageText)) {
+        attachHoverToPageBody(pageAnalysis);
+      }
+    }
+  } else if (type === 'resume' || isLikelyResumeText(pageText)) {
     showNotification('📄 Resume Detected!', 'info');
     showResumeInsights(pageText);
+    // Also attach hover to page body for resumes
+    const resumeAnalysis = analyzeResumeContent(pageText);
+    if (resumeAnalysis) {
+      attachResumeHoverToPageBody(resumeAnalysis);
+    }
   } else {
     removeResumeInsightsPanel();
     console.log('❓ Content type unclear');
@@ -144,7 +156,13 @@ function highlightJobListings() {
     '[class*="card"]',
     '[data-job-id]',
     'article',
-    '.search-card'
+    '.search-card',
+    'main',
+    '[role="main"]',
+    '.content',
+    '.description',
+    '.job-description',
+    '.job-details'
   ];
   
   const elements = document.querySelectorAll(selectors.join(','));
@@ -153,7 +171,7 @@ function highlightJobListings() {
     if (analyzedElements.has(el)) return;
     
     const text = el.innerText;
-    if (text && text.length > 120 && text.length < 15000) {
+    if (text && text.length > 80 && text.length < 50000) {
       const analysis = performAnalysis(text);
       if (analysis.type === 'job_listing' || (analysis.type === 'unknown' && isLikelyJobText(text))) {
         addJobIndicator(el, analysis);
@@ -205,7 +223,6 @@ function addJobIndicator(element, analysis) {
   if (computedAnalysis.type !== 'job_listing' && !isLikelyJobText(sourceText)) return;
   
   element.dataset.aiTagged = 'true';
-  element.setAttribute('data-ai-risk-label', computedAnalysis.riskLevel || 'Agentic');
   element.classList.add('ai-agentic-card');
   element.style.setProperty('--ai-risk-color', computedAnalysis.riskColor || '#38bdf8');
   
@@ -242,7 +259,6 @@ function removeAllIndicators() {
     }
     el.classList.remove('ai-agentic-card');
     el.removeAttribute('data-ai-tagged');
-    el.removeAttribute('data-ai-risk-label');
     el.removeAttribute('data-ai-hover-bound');
     el.style.removeProperty('--ai-risk-color');
   });
@@ -253,16 +269,18 @@ function removeAllIndicators() {
 
 // ==================== HOVER INTELLIGENCE PANEL ====================
 function attachHoverToEntity(element, analysis) {
-  if (!element || !analysis || hoverHandlerMap.has(element)) return;
+  if (!element || !analysis) return;
+  if (element.dataset.aiHoverBound === 'true' || hoverHandlerMap.get(element)) return;
+  element.dataset.aiHoverBound = 'true';
   
   const enterHandler = (event) => {
     if (event.target.closest('#ai-hover-card')) return;
     showHoverInsight(event, analysis);
   };
   
-  element.addEventListener('mouseenter', enterHandler);
-  element.addEventListener('mousemove', moveHoverInsight);
-  element.addEventListener('mouseleave', hideHoverInsight);
+  element.addEventListener('mouseenter', enterHandler, { passive: true });
+  element.addEventListener('mousemove', moveHoverInsight, { passive: true });
+  element.addEventListener('mouseleave', hideHoverInsight, { passive: true });
   hoverHandlerMap.set(element, enterHandler);
 }
 
@@ -339,12 +357,12 @@ function showHoverInsight(event, analysis) {
 
 function moveHoverInsight(event) {
   if (!hoverCardElement) return;
-  const offsetX = 24;
-  const offsetY = 24;
+  const offsetX = 16;
+  const offsetY = 16;
   const cardWidth = hoverCardElement.offsetWidth || 260;
   const cardHeight = hoverCardElement.offsetHeight || 180;
   let left = event.clientX + offsetX;
-  let top = event.clientY - offsetY - cardHeight / 2;
+  let top = event.clientY - cardHeight - offsetY;
   
   if (left + cardWidth > window.innerWidth - 12) {
     left = event.clientX - cardWidth - offsetX;
@@ -352,13 +370,16 @@ function moveHoverInsight(event) {
   
   if (left < 12) left = 12;
   
-  if (top < 12) top = 12;
+  if (top < 12) {
+    top = event.clientY + offsetY;
+  }
   if (top + cardHeight > window.innerHeight - 12) {
     top = window.innerHeight - cardHeight - 12;
   }
   
   hoverCardElement.style.left = `${left}px`;
   hoverCardElement.style.top = `${top}px`;
+  hoverCardElement.style.transform = 'none';
 }
 
 function hideHoverInsight() {
@@ -594,35 +615,32 @@ function showNotification(message, type = 'info') {
   
   const notif = document.createElement('div');
   notif.id = 'ai-analyzer-notification';
-  notif.textContent = message;
+  notif.className = `ai-notification ai-notification-${type}`;
   
-  const colors = {
-    success: '#10b981',
-    info: '#3b82f6',
-    warning: '#f59e0b',
-    error: '#ef4444'
+  const icons = {
+    success: '⚡',
+    info: '💼',
+    warning: '⚠️',
+    error: '❌'
   };
   
-  notif.style.cssText = `
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    background: ${colors[type] || colors.info};
-    color: white;
-    padding: 16px 24px;
-    border-radius: 12px;
-    font-size: 14px;
-    font-weight: 600;
-    z-index: 999999;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-    animation: slideInRight 0.3s ease-out;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  const icon = icons[type] || icons.info;
+  
+  notif.innerHTML = `
+    <div class="ai-notification-content">
+      <span class="ai-notification-icon">${icon}</span>
+      <span class="ai-notification-text">${message}</span>
+    </div>
   `;
   
   document.body.appendChild(notif);
   
+  requestAnimationFrame(() => {
+    notif.classList.add('ai-notification-visible');
+  });
+  
   setTimeout(() => {
-    notif.style.animation = 'fadeOut 0.3s ease-out';
+    notif.classList.remove('ai-notification-visible');
     setTimeout(() => notif.remove(), 300);
   }, 3000);
 }
@@ -768,6 +786,8 @@ function showPDFAnalysisModal(analysis, text, filename) {
 
 // ==================== TYPE DETECTION ====================
 function detectType(text) {
+  if (!text || text.length < 100) return 'unknown';
+  
   const lower = text.toLowerCase();
   let resumeScore = 0;
   let jobScore = 0;
@@ -785,7 +805,13 @@ function detectType(text) {
     /\b(about (the role|this position|this job))\b/i,
     /\b(reporting to|reports to|work under)\b/i,
     /\b(posted|published)\s+\d+\s+(day|hour|week)s?\s+ago/i,
-    /\b(deadline|last date to apply|apply before)\b/i
+    /\b(deadline|last date to apply|apply before)\b/i,
+    /\b(key responsibilities|main duties|primary functions)\b/i,
+    /\b(position overview|role summary|job description)\b/i,
+    /\b(we are seeking|looking to hire|recruiting for)\b/i,
+    /\b(employment type|job type|work schedule)\s*:/i,
+    /\b(qualifications required|minimum requirements|must have)\b/i,
+    /\b(role and responsibilities|job responsibilities|key duties)\b/i
   ];
 
   // STRONG RESUME-ONLY INDICATORS
@@ -802,7 +828,10 @@ function detectType(text) {
     /\b(date of birth|father'?s name|mother'?s name|nationality)\s*:/i,
     /\b(languages known|language proficiency)\s*:/i,
     /linkedin\.com\/in\/\w+/i,
-    /github\.com\/\w+/i
+    /github\.com\/\w+/i,
+    /\b(professional experience|work history|employment record)\s*:/i,
+    /\b(academic qualifications|educational background|degree)\s*:/i,
+    /\b(technical expertise|core competencies|skill set)\s*:/i
   ];
 
   // Count indicators
@@ -820,20 +849,27 @@ function detectType(text) {
 
   // Contextual indicators
   const jobContextual = [
-    { pattern: /\b(requirements?|qualifications?|eligibility)\s*:/i, weight: 3 },
-    { pattern: /\b(responsibilities|duties|role description)\s*:/i, weight: 3 },
-    { pattern: /\b(must have|should have|required)\s*:/i, weight: 2 },
+    { pattern: /\b(requirements?|qualifications?|eligibility)\s*:/i, weight: 4 },
+    { pattern: /\b(responsibilities|duties|role description)\s*:/i, weight: 4 },
+    { pattern: /\b(must have|should have|required)\s*:/i, weight: 3 },
     { pattern: /\b(preferred|nice to have|bonus)\s*:/i, weight: 2 },
-    { pattern: /\b(\d+[\+\-]\s*years? of experience (required|needed))\b/i, weight: 3 },
-    { pattern: /\b(full[\s-]?time|part[\s-]?time|contract|freelance|remote|hybrid)\s+(position|role|job)/i, weight: 3 }
+    { pattern: /\b(\d+[\+\-]\s*years? of experience (required|needed))\b/i, weight: 4 },
+    { pattern: /\b(full[\s-]?time|part[\s-]?time|contract|freelance|remote|hybrid)\s+(position|role|job)/i, weight: 3 },
+    { pattern: /\b(key (responsibilities|duties|functions|tasks))\b/i, weight: 3 },
+    { pattern: /\b(position (details|overview|summary|description))\b/i, weight: 3 },
+    { pattern: /\b(what (you|we) (will|need|expect|require))\b/i, weight: 2 },
+    { pattern: /\b(about (the|this) (role|position|job))\b/i, weight: 3 },
+    { pattern: /\b(role (summary|overview|description))\b/i, weight: 3 }
   ];
 
   const resumeContextual = [
-    { pattern: /\b(work experience|professional experience|employment history)\s*:/i, weight: 3 },
-    { pattern: /\b(education|academic background|qualifications)\s*:/i, weight: 3 },
-    { pattern: /\b(skills?|technical skills?|core competencies)\s*:/i, weight: 2 },
-    { pattern: /\b(projects?|portfolio|work samples)\s*:/i, weight: 2 },
-    { pattern: /\b(certifications?|training|courses)\s*:/i, weight: 2 }
+    { pattern: /\b(work experience|professional experience|employment history)\s*:/i, weight: 4 },
+    { pattern: /\b(education|academic background|qualifications)\s*:/i, weight: 4 },
+    { pattern: /\b(skills?|technical skills?|core competencies)\s*:/i, weight: 3 },
+    { pattern: /\b(projects?|portfolio|work samples)\s*:/i, weight: 3 },
+    { pattern: /\b(certifications?|training|courses)\s*:/i, weight: 2 },
+    { pattern: /\b(objective|career objective|professional summary)\s*:/i, weight: 3 },
+    { pattern: /\b(achievements|accomplishments|awards)\s*:/i, weight: 2 }
   ];
 
   jobContextual.forEach(({ pattern, weight }) => {
@@ -853,10 +889,21 @@ function detectType(text) {
   // Length check
   if (text.length < 150) return 'unknown';
 
-  // Final decision
+  // Enhanced scoring with weighted factors
+  const firstPersonCount = (text.match(/\b(i |my |me |mine )\b/gi) || []).length;
+  if (firstPersonCount >= 8) resumeScore += 4;
+  if (firstPersonCount <= 2 && jobScore > 0) jobScore += 2;
+
+  // Check for structured sections (more common in resumes)
+  const sectionHeaders = (text.match(/^[A-Z][A-Za-z\s]{3,30}:$/gm) || []).length;
+  if (sectionHeaders >= 4 && resumeScore > jobScore) resumeScore += 3;
+
+  // Final decision with improved thresholds
   const scoreDiff = Math.abs(resumeScore - jobScore);
-  if (resumeScore >= 12 && resumeScore > jobScore && scoreDiff >= 5) return 'resume';
-  if (jobScore >= 12 && jobScore > resumeScore && scoreDiff >= 5) return 'job_listing';
+  if (resumeScore >= 15 && resumeScore > jobScore && scoreDiff >= 4) return 'resume';
+  if (jobScore >= 15 && jobScore > resumeScore && scoreDiff >= 4) return 'job_listing';
+  if (resumeScore >= 10 && resumeScore > jobScore && scoreDiff >= 6) return 'resume';
+  if (jobScore >= 10 && jobScore > resumeScore && scoreDiff >= 6) return 'job_listing';
   
   return 'unknown';
 }
@@ -872,7 +919,12 @@ function isLikelyJobText(text) {
     ['salary', 'compensation'],
     ['apply', 'application'],
     ['benefits', 'perks'],
-    ['team', 'company']
+    ['team', 'company'],
+    ['position', 'opening'],
+    ['hiring', 'recruiting'],
+    ['job description', 'role description'],
+    ['work experience', 'professional experience'],
+    ['skills', 'competencies']
   ];
   
   let hitScore = 0;
@@ -890,7 +942,18 @@ function isLikelyJobText(text) {
   const colonSections = (text.match(/\b[A-Z][A-Za-z\s]{2,40}:/g) || []).length;
   const structureScore = Math.min(6, colonSections * 1.2);
   
-  return (hitScore + bulletScore + structureScore + lengthScore) >= 12;
+  const longFormIndicators = [
+    /\b(what you'll do|key responsibilities|main duties)\b/i,
+    /\b(required qualifications|must have|essential skills)\b/i,
+    /\b(about the role|position overview|job summary)\b/i,
+    /\b(we are looking for|seeking a|hiring for)\b/i
+  ];
+  let longFormScore = 0;
+  longFormIndicators.forEach(pattern => {
+    if (pattern.test(text)) longFormScore += 3;
+  });
+  
+  return (hitScore + bulletScore + structureScore + lengthScore + longFormScore) >= 8;
 }
 
 // ==================== RESUME INSIGHTS ====================
@@ -995,21 +1058,22 @@ function removeResumeHover() {
 }
 
 function analyzeResumeContent(text) {
-  if (!text || text.length < 200) {
+  if (!text || text.length < 150) {
     return null;
   }
   
-  let score = 62;
+  let score = 55;
   const highlights = [];
   const badges = [];
   const normalized = text.toLowerCase();
   
   const sections = [
-    { pattern: /\b(work experience|professional experience|employment history)\b/i, weight: 8, badge: 'Experience depth' },
-    { pattern: /\b(education|academic background)\b/i, weight: 6, badge: 'Education detailed' },
-    { pattern: /\b(skill[s]?|core competencies|technical skills)\b/i, weight: 6, badge: 'Skill stack' },
-    { pattern: /\b(projects?|case studies|portfolio)\b/i, weight: 5, badge: 'Project showcase' },
-    { pattern: /\b(certifications?|awards|recognition)\b/i, weight: 4, badge: 'Credentials' }
+    { pattern: /\b(work experience|professional experience|employment history)\b/i, weight: 10, badge: 'Experience depth' },
+    { pattern: /\b(education|academic background|academic qualifications)\b/i, weight: 8, badge: 'Education detailed' },
+    { pattern: /\b(skill[s]?|core competencies|technical skills|key skills)\b/i, weight: 8, badge: 'Skill stack' },
+    { pattern: /\b(projects?|case studies|portfolio|key projects)\b/i, weight: 6, badge: 'Project showcase' },
+    { pattern: /\b(certifications?|awards|recognition|achievements)\b/i, weight: 5, badge: 'Credentials' },
+    { pattern: /\b(objective|career objective|professional summary|summary)\b/i, weight: 4, badge: 'Clear objective' }
   ];
   
   sections.forEach(section => {
@@ -1020,16 +1084,23 @@ function analyzeResumeContent(text) {
   });
   
   const metricsMatches = (text.match(/\b\d+%|\b\d+[kKmM]?\b/g) || []).length;
-  if (metricsMatches >= 4) {
-    score += 8;
+  if (metricsMatches >= 5) {
+    score += 10;
     highlights.push('Strong quantified impact throughout the resume.');
+  } else if (metricsMatches >= 3) {
+    score += 7;
+    highlights.push('Good use of measurable achievements.');
   } else if (metricsMatches >= 2) {
-    score += 5;
+    score += 4;
     highlights.push('Some measurable achievements detected.');
   }
   
-  const leadershipSignals = /\b(led|managed|mentored|spearheaded|directed|orchestrated|built)\b/i.test(text);
-  if (leadershipSignals) {
+  const leadershipSignals = /\b(led|managed|mentored|spearheaded|directed|orchestrated|built|developed|implemented|designed|created)\b/i.test(text);
+  const leadershipCount = (text.match(/\b(led|managed|mentored|spearheaded|directed|orchestrated|built|developed|implemented|designed|created)\b/gi) || []).length;
+  if (leadershipCount >= 5) {
+    score += 6;
+    highlights.push('Strong leadership and action-oriented language.');
+  } else if (leadershipSignals) {
     score += 4;
     highlights.push('Leadership verbs showcase ownership mindset.');
   }
@@ -1125,9 +1196,15 @@ async function setupPDFSupport() {
 }
 
 function isPDFPage() {
+  const href = window.location.href.toLowerCase();
+  const pathname = window.location.pathname.toLowerCase();
   return (
     document.contentType === 'application/pdf' ||
-    window.location.href.toLowerCase().endsWith('.pdf')
+    href.endsWith('.pdf') ||
+    pathname.endsWith('.pdf') ||
+    (href.startsWith('file://') && (href.includes('.pdf') || pathname.includes('.pdf'))) ||
+    document.querySelector('embed[type="application/pdf"]') !== null ||
+    document.querySelector('object[type="application/pdf"]') !== null
   );
 }
 
@@ -1194,13 +1271,15 @@ async function extractTextFromPDF(pdfUrl) {
 
     const loadingTask = window.pdfjsLib.getDocument({
       url: pdfUrl,
-      withCredentials: false
+      withCredentials: false,
+      disableAutoFetch: false,
+      disableStream: false
     });
     
     const pdf = await loadingTask.promise;
     let fullText = '';
 
-    const maxPages = Math.min(pdf.numPages, 10);
+    const maxPages = Math.min(pdf.numPages, 15);
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
       try {
@@ -1219,6 +1298,16 @@ async function extractTextFromPDF(pdfUrl) {
     return fullText.trim();
   } catch (error) {
     console.error('PDF extraction error:', error);
+    // Try alternative method for local files
+    if (pdfUrl.startsWith('file://')) {
+      try {
+        const response = await fetch(pdfUrl);
+        const blob = await response.blob();
+        return await extractTextFromBlob(blob);
+      } catch (fetchError) {
+        console.error('Alternative PDF extraction failed:', fetchError);
+      }
+    }
     return null;
   }
 }
@@ -1268,24 +1357,66 @@ async function extractTextFromBlob(blob) {
 async function analyzePDFPage() {
   try {
     showLoadingNotification('Agentic AI scanning PDF…');
-    const pdfText = await extractTextFromPDF(window.location.href);
+    let pdfText;
+    const href = window.location.href;
+    
+    pdfText = await extractTextFromPDF(href);
+    
     hideLoadingNotification();
-    if (!pdfText) {
-      showNotification('Unable to read PDF', 'error');
+    if (!pdfText || pdfText.length < 100) {
+      showNotification('Unable to read PDF content', 'error');
       return;
     }
+    
     const analysis = performAnalysis(pdfText);
-    if (analysis.type === 'resume') {
+    const isResume = analysis.type === 'resume' || isLikelyResumeText(pdfText);
+    
+    if (isResume) {
       showResumeInsights(pdfText);
+      const resumeAnalysis = analyzeResumeContent(pdfText);
+      if (resumeAnalysis) {
+        attachResumeHoverToPageBody(resumeAnalysis);
+      }
     } else {
       removeResumeInsightsPanel();
+      // If it's a job listing PDF, attach hover
+      if (analysis.type === 'job_listing' || isLikelyJobText(pdfText)) {
+        attachHoverToPageBody(analysis);
+      }
     }
-    showPDFAnalysisModal(analysis, pdfText, extractFileName(window.location.href));
+    
+    showPDFAnalysisModal(analysis, pdfText, extractFileName(href));
   } catch (error) {
     console.error('PDF page analysis failed', error);
     hideLoadingNotification();
     showNotification('PDF scan failed', 'error');
   }
+}
+
+function isLikelyResumeText(text) {
+  if (!text || text.length < 150) return false;
+  const normalized = text.toLowerCase();
+  const resumeIndicators = [
+    /\b(work experience|professional experience|employment history)\b/i,
+    /\b(education|academic background|qualifications|academic qualifications)\b/i,
+    /\b(skills?|technical skills?|core competencies|key skills)\b/i,
+    /\b(objective|career goal|professional summary|career objective)\b/i,
+    /\b(projects?|portfolio|achievements|certifications?)\b/i,
+    /\b(i |my |me |mine )/gi
+  ];
+  let score = 0;
+  resumeIndicators.forEach(pattern => {
+    if (pattern.test(text)) score += 2;
+  });
+  const firstPersonCount = (normalized.match(/\b(i |my |me |mine )/g) || []).length;
+  if (firstPersonCount >= 8) score += 4;
+  else if (firstPersonCount >= 5) score += 2;
+  
+  // Check for resume structure
+  const sectionHeaders = (text.match(/^[A-Z][A-Za-z\s]{3,30}:$/gm) || []).length;
+  if (sectionHeaders >= 3) score += 2;
+  
+  return score >= 6;
 }
 
 function monitorPDFLinks() {
