@@ -1,74 +1,62 @@
 // content.js
-// Automatically scans webpage for job post data and sends score to popup/background.
+// AI-powered TrustScan using Google Cloud API (Gemini/PaLM style)
 
 (function () {
-    // Rule-based red flags
-    const redFlagKeywords = [
-        /registration\s*fee/i,
-        /security\s*deposit/i,
-        /pay\s*to\s*apply/i,
-        /urgent\s*hiring/i,
-        /part[\s-]*time\s*from\s*home/i,
-        /easy\s*income/i,
-        /work\s*from\s*home\s*and\s*earn/i
-    ];
+    const API_KEY = "AIzaSyAty8S7qWDKtSO70WYseE5KTVZ16EUMu-Y";
 
-    const suspiciousEmails = [
-        /@gmail\.com/i, /@yahoo\.com/i, /@outlook\.com/i, /@hotmail\.com/i
-    ];
-
-    function scanPage() {
-        const text = document.body.innerText;
-        const results = {
-            suspiciousPhrases: [],
-            suspiciousEmails: [],
-            missingWebsite: false
-        };
-
-        // 1️⃣ Keyword red flags
-        redFlagKeywords.forEach(regex => {
-            if (regex.test(text)) results.suspiciousPhrases.push(regex.toString());
-        });
-
-        // 2️⃣ Suspicious email domains
-        const emails = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g) || [];
-        emails.forEach(email => {
-            if (suspiciousEmails.some(r => r.test(email))) {
-                results.suspiciousEmails.push(email);
-            }
-        });
-
-        // 3️⃣ Missing website/contact info
-        if (!/https?:\/\/[^\s]+/i.test(text) && results.suspiciousEmails.length > 0) {
-            results.missingWebsite = true;
-        }
-
-        // 4️⃣ Risk scoring
-        let riskScore = 0;
-        riskScore += results.suspiciousPhrases.length * 3;
-        riskScore += results.suspiciousEmails.length * 2;
-        if (results.missingWebsite) riskScore += 1;
+    async function scanPage() {
+        const text = document.body.innerText.slice(0, 20000); // limit to avoid huge payloads
+        const prompt = `6
+        Analyze this job post text for potential scam/fraud indicators.
+        Rate it as Low, Medium, or High risk.
+        Return JSON like:
+        {"risk":"High","reason":"mentions fees and gmail contact"}
+        Job text: ${text}6
+        `;
 
         let riskLevel = "Low";
-        if (riskScore >= 5) riskLevel = "High";
-        else if (riskScore >= 2) riskLevel = "Medium";
+        let reason = "None";
 
-        // Save to storage
+        try {
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }]
+                })
+            });
+
+            const data = await res.json();
+            const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            console.log("Gemini API raw response:", raw);
+
+            const jsonMatch = raw.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]);
+                riskLevel = parsed.risk || "Low";
+                reason = parsed.reason || "No reason given.";
+            } else {
+                riskLevel = "Medium";
+                reason = "Unable to parse response.";
+            }
+        } catch (err) {
+            console.error("AI Scan error:", err);
+            riskLevel = "Medium";
+            reason = "Error contacting API.";
+        }
+
         const flaggedData = {
             url: window.location.href,
             time: new Date().toLocaleString(),
             riskLevel,
-            details: results
+            reason
         };
 
         chrome.storage.local.set({ lastScan: flaggedData });
         chrome.runtime.sendMessage({ type: "updateBadge", level: riskLevel });
     }
 
-    // Auto-run after page load
     window.addEventListener("load", scanPage);
-
-    // Allow manual trigger
     chrome.runtime.onMessage.addListener((msg) => {
         if (msg.action === "scanAgain") scanPage();
     });
