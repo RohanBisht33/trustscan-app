@@ -1,15 +1,23 @@
 {
   "manifest_version": 3,
   "name": "AI Job & Resume Analyzer",
-  "version": "2.0.1",
+  "version": "2.0.0",
   "description": "Intelligent analysis of job listings and resumes with AI-powered trust scoring and risk detection",
   
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "scripting"
   ],
   
   "host_permissions": [
+    "*://*.linkedin.com/*",
+    "*://*.internshala.com/*",
+    "*://*.naukri.com/*",
+    "*://*.indeed.com/*",
+    "*://*.glassdoor.com/*",
+    "*://*.monster.com/*",
+    "*://*.cdnjs.cloudflare.com/*",
     "<all_urls>"
   ],
   
@@ -17,7 +25,6 @@
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
-      "32": "icons/icon32.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
@@ -29,19 +36,16 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "css": ["content.css"],
-      "run_at": "document_idle",
-      "all_frames": false
+      "run_at": "document_idle"
     }
   ],
   
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   
   "icons": {
     "16": "icons/icon16.png",
-    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
@@ -58,7 +62,5 @@
       "id": "ai-job-analyzer@example.com",
       "strict_min_version": "109.0"
     }
-  },
-  
-  "minimum_chrome_version": "88"
+  }
 }

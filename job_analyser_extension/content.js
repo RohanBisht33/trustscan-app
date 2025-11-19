@@ -557,7 +557,13 @@ function detectType(text) {
 }
 
 // ==================== PDF SUPPORT ====================
+// ==================== FIXED PDF SUPPORT ====================
+// Replace the PDF-related functions in content.js with these
+
+// reuse existing pdfJsLoaded variable declared at top
+
 async function setupPDFSupport() {
+  // Only load PDF.js when actually needed
   const hasPDFLinks = document.querySelector('a[href$=".pdf"]') !== null;
   const hasFileInputs = document.querySelector('input[type="file"]') !== null;
   const isPDF = isPDFPage();
@@ -566,71 +572,63 @@ async function setupPDFSupport() {
     await loadPDFJsSafe();
     await analyzePDFPage();
   } else if (hasPDFLinks || hasFileInputs) {
+    // Lazy load when user interacts
     if (hasPDFLinks) monitorPDFLinks();
     if (hasFileInputs) monitorFileUploads();
   }
 }
 
 function isPDFPage() {
+  // More reliable PDF detection
   return (
     document.contentType === 'application/pdf' ||
     window.location.href.toLowerCase().endsWith('.pdf') ||
-    (document.querySelector('embed[type="application/pdf"]') !== null)
+    (document.querySelector('embed[type="application/pdf"]') !== null && 
+     document.querySelector('embed[type="application/pdf"]').src)
   );
 }
 
-async function analyzePDFPage() {
-  try {
-    showLoadingNotification('📄 Analyzing PDF...');
-    const text = await extractTextFromPDF(window.location.href);
-    
-    if (text && text.length > 100) {
-      const analysis = performAnalysis(text);
-      if (analysis.type !== 'unknown') {
-        const loadingNotif = document.getElementById('ai-loading-notif');
-        if (loadingNotif) loadingNotif.remove();
-        
-        showPDFAnalysisModal(analysis, text, 'Current PDF');
-      }
-    }
-  } catch (error) {
-    console.error('PDF page analysis failed:', error);
-  }
-}
-
 async function loadPDFJsSafe() {
-  if (pdfJsLoaded) return;
+  if (pdfJsLoaded) return true;
   
   return new Promise((resolve, reject) => {
+    // Check if already loaded
     if (window.pdfjsLib) {
       pdfJsLoaded = true;
-      resolve();
+      resolve(true);
       return;
     }
 
+    // Create script with timeout
     const script = document.createElement('script');
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
     script.async = true;
     
     const timeout = setTimeout(() => {
+      console.error('PDF.js loading timeout');
+      script.remove();
       reject(new Error('PDF.js loading timeout'));
-    }, 10000);
+    }, 10000); // 10 second timeout
 
     script.onload = () => {
       clearTimeout(timeout);
       if (window.pdfjsLib) {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        // IMPORTANT: Disable worker to avoid CSP issues
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = null;
+        
+        // Use legacy build without worker
         pdfJsLoaded = true;
-        console.log('✅ PDF.js loaded successfully');
-        resolve();
+        console.log('✅ PDF.js loaded successfully (worker disabled)');
+        resolve(true);
       } else {
+        clearTimeout(timeout);
         reject(new Error('PDF.js failed to initialize'));
       }
     };
     
     script.onerror = () => {
       clearTimeout(timeout);
+      console.error('Failed to load PDF.js script');
       reject(new Error('Failed to load PDF.js script'));
     };
     
@@ -640,26 +638,40 @@ async function loadPDFJsSafe() {
 
 async function extractTextFromPDF(pdfUrl) {
   try {
-    await loadPDFJsSafe();
+    const loaded = await loadPDFJsSafe();
+    if (!loaded) {
+      console.error('PDF.js not loaded');
+      return null;
+    }
 
+    // Configure loading task without worker
     const loadingTask = window.pdfjsLib.getDocument({
       url: pdfUrl,
-      withCredentials: false
+      withCredentials: false,
+      disableWorker: true, // Disable worker
+      isEvalSupported: false,
+      useWorkerFetch: false
     });
     
     const pdf = await loadingTask.promise;
     let fullText = '';
 
+    // Limit to first 10 pages for performance
     const maxPages = Math.min(pdf.numPages, 10);
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map(item => item.str)
-        .filter(str => str.trim().length > 0)
-        .join(' ');
-      fullText += pageText + '\n';
+      try {
+        const page = await pdf.getPage(pageNum);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map(item => item.str)
+          .filter(str => str.trim().length > 0)
+          .join(' ');
+        fullText += pageText + '\n\n';
+      } catch (pageError) {
+        console.error(`Error extracting page ${pageNum}:`, pageError);
+        // Continue with other pages
+      }
     }
 
     return fullText.trim();
@@ -671,37 +683,82 @@ async function extractTextFromPDF(pdfUrl) {
 
 async function extractTextFromBlob(blob) {
   try {
-    await loadPDFJsSafe();
-
+    // Validate blob
     if (!blob || blob.type !== 'application/pdf') {
-      throw new Error('Invalid PDF blob');
+      console.error('Invalid PDF blob');
+      return null;
+    }
+
+    const loaded = await loadPDFJsSafe();
+    if (!loaded) {
+      console.error('PDF.js not loaded');
+      return null;
     }
 
     const arrayBuffer = await blob.arrayBuffer();
+    
+    // Configure loading task without worker
     const loadingTask = window.pdfjsLib.getDocument({ 
       data: arrayBuffer,
-      verbosity: 0
+      disableWorker: true, // Disable worker
+      isEvalSupported: false,
+      useWorkerFetch: false,
+      verbosity: 0 // Suppress console warnings
     });
     
     const pdf = await loadingTask.promise;
     let fullText = '';
 
+    // Limit to first 10 pages
     const maxPages = Math.min(pdf.numPages, 10);
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map(item => item.str)
-        .filter(str => str.trim().length > 0)
-        .join(' ');
-      fullText += pageText + '\n';
+      try {
+        const page = await pdf.getPage(pageNum);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map(item => item.str)
+          .filter(str => str.trim().length > 0)
+          .join(' ');
+        fullText += pageText + '\n\n';
+      } catch (pageError) {
+        console.error(`Error extracting page ${pageNum}:`, pageError);
+        // Continue with other pages
+      }
     }
 
     return fullText.trim();
   } catch (error) {
     console.error('PDF blob extraction error:', error);
     return null;
+  }
+}
+
+async function analyzePDFPage() {
+  try {
+    console.log('📄 Analyzing PDF page...');
+    showLoadingNotification('📄 Analyzing PDF...');
+    
+    const text = await extractTextFromPDF(window.location.href);
+    
+    // Remove loading notification
+    const loadingNotif = document.getElementById('ai-loading-notif');
+    if (loadingNotif) loadingNotif.remove();
+    
+    if (text && text.length > 100) {
+      const analysis = performAnalysis(text);
+      if (analysis.type !== 'unknown') {
+        showPDFOverlay(analysis, text);
+        showNotification('✅ PDF analyzed successfully!');
+      } else {
+        showNotification('ℹ️ Could not identify document type');
+      }
+    } else {
+      showNotification('⚠️ Could not extract text from PDF');
+    }
+  } catch (error) {
+    console.error('PDF page analysis failed:', error);
+    showNotification('❌ Failed to analyze PDF');
   }
 }
 
@@ -712,17 +769,21 @@ function monitorPDFLinks() {
       return;
     }
 
+    // Only intercept if not opening in new tab
     if (e.ctrlKey || e.metaKey || e.shiftKey || target.target === '_blank') {
       return;
     }
 
     e.preventDefault();
+    e.stopPropagation();
+    
     showLoadingNotification('📄 Analyzing PDF...');
     
     try {
-      await loadPDFJsSafe();
+      await loadPDFJsSafe(); // Load PDF.js first
       const text = await extractTextFromPDF(target.href);
       
+      // Remove loading notification
       const loadingNotif = document.getElementById('ai-loading-notif');
       if (loadingNotif) loadingNotif.remove();
       
@@ -731,28 +792,35 @@ function monitorPDFLinks() {
         if (analysis.type !== 'unknown') {
           showPDFAnalysisModal(analysis, text, target.href);
         } else {
-          showNotification('❓ Could not identify content type', 'warning');
+          showNotification('ℹ️ Could not identify content type');
         }
       } else {
-        showNotification('❌ Could not extract text from PDF', 'error');
+        showNotification('⚠️ Could not extract text from PDF');
       }
     } catch (error) {
       console.error('PDF analysis failed:', error);
-      showNotification('❌ Failed to analyze PDF', 'error');
+      
+      // Remove loading notification
+      const loadingNotif = document.getElementById('ai-loading-notif');
+      if (loadingNotif) loadingNotif.remove();
+      
+      showNotification('❌ Failed to analyze PDF');
     }
     
+    // Ask user if they want to open anyway
     setTimeout(() => {
-      const openAnyway = confirm('Open PDF in new tab?');
-      if (openAnyway) {
+      if (confirm('Would you like to open the PDF in a new tab?')) {
         window.open(target.href, '_blank');
       }
     }, 1000);
-  }, true);
+  }, true); // Use capture phase
 }
 
 function monitorFileUploads() {
+  // Monitor existing file inputs
   document.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
 
+  // Monitor new file inputs with debouncing
   let observerTimeout;
   const observer = new MutationObserver((mutations) => {
     clearTimeout(observerTimeout);
@@ -760,15 +828,11 @@ function monitorFileUploads() {
       mutations.forEach(mutation => {
         mutation.addedNodes.forEach(node => {
           if (node.nodeType === 1) {
-            try {
-              if (node.matches && node.matches('input[type="file"]')) {
-                attachFileHandler(node);
-              }
-              if (node.querySelectorAll) {
-                node.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
-              }
-            } catch (e) {
-              // ignore nodes that don't support matches/querySelectorAll
+            if (node.matches && node.matches('input[type="file"]')) {
+              attachFileHandler(node);
+            }
+            if (node.querySelectorAll) {
+              node.querySelectorAll('input[type="file"]').forEach(attachFileHandler);
             }
           }
         });
@@ -776,9 +840,9 @@ function monitorFileUploads() {
     }, 100); // Debounce for 100ms
   });
 
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
+  observer.observe(document.body, { 
+    childList: true, 
+    subtree: true 
   });
 }
 
@@ -788,42 +852,124 @@ function attachFileHandler(input) {
 
   input.addEventListener('change', async (e) => {
     const file = e.target.files[0];
+    
     if (!file) return;
-
-    // Validate type and size
+    
+    // Check file type and size
     if (file.type !== 'application/pdf') {
-      console.log('⚠️ Not a PDF file, skipping analysis');
+      console.log('Not a PDF file, skipping analysis');
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) { // 5 MB limit
-      showNotification('⚠️ PDF too large (max 5MB)', 'warning');
+    if (file.size > 5 * 1024 * 1024) { // 5MB limit
+      showNotification('⚠️ PDF too large (max 5MB)');
+      return;
+    }
+
+    if (file.size < 100) { // Too small to be valid
+      console.log('File too small, skipping analysis');
       return;
     }
 
     showLoadingNotification('📄 Analyzing uploaded PDF...');
-
+    
     try {
-      await loadPDFJsSafe();
+      await loadPDFJsSafe(); // Ensure PDF.js is loaded
       const text = await extractTextFromBlob(file);
-
-      // Remove spinner
+      
+      // Remove loading notification
       const loadingNotif = document.getElementById('ai-loading-notif');
       if (loadingNotif) loadingNotif.remove();
-
+      
       if (text && text.length > 100) {
         const analysis = performAnalysis(text);
         if (analysis.type !== 'unknown') {
           showPDFAnalysisModal(analysis, text, file.name);
+          showNotification(`✅ ${file.name} analyzed successfully!`);
         } else {
-          showNotification('❓ Could not identify content type', 'warning');
+          showNotification('ℹ️ Could not identify content type');
         }
       } else {
-        showNotification('❌ Could not extract text from PDF', 'error');
+        showNotification('⚠️ Could not extract text from PDF');
       }
     } catch (error) {
       console.error('File upload analysis failed:', error);
-      showNotification('❌ Failed to analyze PDF', 'error');
+      
+      // Remove loading notification
+      const loadingNotif = document.getElementById('ai-loading-notif');
+      if (loadingNotif) loadingNotif.remove();
+      
+      showNotification('❌ Failed to analyze PDF');
     }
   });
+}
+
+function showPDFOverlay(analysis, fullText) {
+  const overlay = document.createElement('div');
+  overlay.id = 'ai-pdf-overlay';
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 9999999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.3s ease;
+  `;
+
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    background: white;
+    border-radius: 16px;
+    padding: 30px;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    position: relative;
+  `;
+
+  modal.innerHTML = generateDetailedHTML(analysis, fullText);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.style.cssText = `
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    background: #ef4444;
+    color: white;
+    border: none;
+    font-size: 28px;
+    cursor: pointer;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 300;
+    transition: all 0.2s;
+    line-height: 1;
+  `;
+  closeBtn.onmouseover = () => closeBtn.style.background = '#dc2626';
+  closeBtn.onmouseout = () => closeBtn.style.background = '#ef4444';
+  closeBtn.onclick = () => overlay.remove();
+
+  modal.appendChild(closeBtn);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+}
+
+function showPDFAnalysisModal(analysis, fullText, filename) {
+  showPDFOverlay(analysis, fullText);
 }
