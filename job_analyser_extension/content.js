@@ -3,6 +3,17 @@ const browser = window.browser || window.chrome;
 let pdfJsLoaded = false;
 let extensionEnabled = true;
 let analyzedElements = new WeakSet();
+let hoverCardElement = null;
+let hoverHideTimeout = null;
+let resumeInsightPanel = null;
+let resumeHoverHandler = null;
+let resumeHoverPayload = null;
+let currentTheme = 'dark';
+let pdfObserver = null;
+let hoverHandlerMap = new WeakMap();
+let domObserver = null;
+let domObserverTimeout = null;
+let modalHandlerMap = new WeakMap();
 
 // ==================== MESSAGE LISTENER ====================
 browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
@@ -29,6 +40,12 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     sendResponse({status: 'toggled', enabled: extensionEnabled});
     return true;
   }
+
+  if (request.action === 'setTheme') {
+    applyThemeToPage(request.theme);
+    sendResponse({status: 'theme-updated', theme: currentTheme});
+    return true;
+  }
   
   return false;
 });
@@ -38,8 +55,10 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   console.log('🚀 AI Job & Resume Analyzer loaded');
   
   // Check if extension is enabled
-  browser.storage.local.get(['extensionEnabled'], function(result) {
+  browser.storage.local.get(['extensionEnabled', 'uiTheme'], function(result) {
     extensionEnabled = result.extensionEnabled !== false;
+    const storedTheme = result.uiTheme || currentTheme;
+    applyThemeToPage(storedTheme);
     
     if (extensionEnabled) {
       console.log('✅ Extension is enabled');
@@ -63,7 +82,14 @@ function startAnalysis() {
   // Analyze current page after a short delay
   setTimeout(() => {
     analyzeCurrentPage();
+    startDomObserver();
   }, 1000);
+}
+
+// ==================== THEME MANAGEMENT ====================
+function applyThemeToPage(theme) {
+  currentTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-ai-theme', currentTheme);
 }
 
 // ==================== MAIN ANALYSIS FUNCTION ====================
@@ -85,12 +111,15 @@ function analyzeCurrentPage() {
   const type = detectType(pageText);
   console.log('📊 Detected type:', type);
   
-  if (type === 'job_listing') {
+  if (type === 'job_listing' || (type === 'unknown' && isLikelyJobText(pageText))) {
+    removeResumeInsightsPanel();
     showNotification('💼 Job Listing Detected!', 'success');
     highlightJobListings();
   } else if (type === 'resume') {
     showNotification('📄 Resume Detected!', 'info');
+    showResumeInsights(pageText);
   } else {
+    removeResumeInsightsPanel();
     console.log('❓ Content type unclear');
   }
   
@@ -107,6 +136,7 @@ function extractPageText() {
 }
 
 function highlightJobListings() {
+  if (!extensionEnabled) return;
   // Find common job listing containers
   const selectors = [
     '[class*="job"]',
@@ -123,10 +153,10 @@ function highlightJobListings() {
     if (analyzedElements.has(el)) return;
     
     const text = el.innerText;
-    if (text && text.length > 100 && text.length < 5000) {
-      const type = detectType(text);
-      if (type === 'job_listing') {
-        addJobIndicator(el);
+    if (text && text.length > 120 && text.length < 15000) {
+      const analysis = performAnalysis(text);
+      if (analysis.type === 'job_listing' || (analysis.type === 'unknown' && isLikelyJobText(text))) {
+        addJobIndicator(el, analysis);
         analyzedElements.add(el);
       }
     }
@@ -134,6 +164,7 @@ function highlightJobListings() {
 }
 
 function analyzeJobCards() {
+  if (!extensionEnabled) return;
   // Specific selectors for popular job sites
   const jobCardSelectors = {
     'linkedin.com': '.job-card-container, .jobs-search-results__list-item',
@@ -151,69 +182,191 @@ function analyzeJobCards() {
     console.log(`📋 Found ${cards.length} job cards on ${hostname}`);
     
     cards.forEach(card => {
-      if (!analyzedElements.has(card)) {
-        addJobIndicator(card);
-        analyzedElements.add(card);
-      }
+      if (analyzedElements.has(card)) return;
+      
+      const text = card.innerText;
+      if (!text || text.length < 80) return;
+      
+      const analysis = performAnalysis(text);
+      if (analysis.type !== 'job_listing' && !isLikelyJobText(text)) return;
+      
+      addJobIndicator(card, analysis);
+      analyzedElements.add(card);
     });
   }
 }
 
 // ==================== UI INDICATORS ====================
-function addJobIndicator(element) {
-  // Don't add if already has indicator
-  if (element.querySelector('.ai-job-indicator')) return;
+function addJobIndicator(element, analysis) {
+  if (!element || element.dataset.aiTagged === 'true') return;
   
-  const indicator = document.createElement('div');
-  indicator.className = 'ai-job-indicator';
-  indicator.innerHTML = '✨ AI';
-  indicator.style.cssText = `
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 4px 10px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 700;
-    z-index: 1000;
-    cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    transition: all 0.2s ease;
-  `;
+  const sourceText = element.innerText || '';
+  const computedAnalysis = analysis || performAnalysis(sourceText);
+  if (computedAnalysis.type !== 'job_listing' && !isLikelyJobText(sourceText)) return;
   
-  // Make parent position relative if needed
+  element.dataset.aiTagged = 'true';
+  element.setAttribute('data-ai-risk-label', computedAnalysis.riskLevel || 'Agentic');
+  element.classList.add('ai-agentic-card');
+  element.style.setProperty('--ai-risk-color', computedAnalysis.riskColor || '#38bdf8');
+  
   const parentPosition = window.getComputedStyle(element).position;
   if (parentPosition === 'static') {
     element.style.position = 'relative';
   }
   
-  // Add hover effect
-  indicator.addEventListener('mouseenter', () => {
-    indicator.style.transform = 'scale(1.1)';
-    indicator.style.boxShadow = '0 4px 16px rgba(0,0,0,0.3)';
-  });
+  attachHoverToEntity(element, computedAnalysis);
   
-  indicator.addEventListener('mouseleave', () => {
-    indicator.style.transform = 'scale(1)';
-    indicator.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
-  });
-  
-  // Add click handler for detailed analysis
-  indicator.addEventListener('click', (e) => {
+  const modalHandler = (e) => {
+    e.preventDefault();
     e.stopPropagation();
-    const text = element.innerText;
-    const analysis = performAnalysis(text);
-    showAnalysisModal(analysis, element);
-  });
+    showAnalysisModal(computedAnalysis, element);
+  };
   
-  element.appendChild(indicator);
+  element.addEventListener('dblclick', modalHandler);
+  modalHandlerMap.set(element, modalHandler);
 }
 
 function removeAllIndicators() {
-  document.querySelectorAll('.ai-job-indicator').forEach(el => el.remove());
+  document.querySelectorAll('.ai-agentic-card').forEach(el => {
+    const handler = hoverHandlerMap.get(el);
+    if (handler) {
+      el.removeEventListener('mouseenter', handler);
+      hoverHandlerMap.delete(el);
+    }
+    el.removeEventListener('mousemove', moveHoverInsight);
+    el.removeEventListener('mouseleave', hideHoverInsight);
+    const modalHandler = modalHandlerMap.get(el);
+    if (modalHandler) {
+      el.removeEventListener('dblclick', modalHandler);
+      modalHandlerMap.delete(el);
+    }
+    el.classList.remove('ai-agentic-card');
+    el.removeAttribute('data-ai-tagged');
+    el.removeAttribute('data-ai-risk-label');
+    el.removeAttribute('data-ai-hover-bound');
+    el.style.removeProperty('--ai-risk-color');
+  });
   analyzedElements = new WeakSet();
+  hideHoverInsight();
+  removeResumeInsightsPanel();
+}
+
+// ==================== HOVER INTELLIGENCE PANEL ====================
+function attachHoverToEntity(element, analysis) {
+  if (!element || !analysis || hoverHandlerMap.has(element)) return;
+  
+  const enterHandler = (event) => {
+    if (event.target.closest('#ai-hover-card')) return;
+    showHoverInsight(event, analysis);
+  };
+  
+  element.addEventListener('mouseenter', enterHandler);
+  element.addEventListener('mousemove', moveHoverInsight);
+  element.addEventListener('mouseleave', hideHoverInsight);
+  hoverHandlerMap.set(element, enterHandler);
+}
+
+function ensureHoverCardElement() {
+  if (hoverCardElement) return hoverCardElement;
+  
+  hoverCardElement = document.createElement('div');
+  hoverCardElement.id = 'ai-hover-card';
+  hoverCardElement.dataset.visible = 'false';
+  document.body.appendChild(hoverCardElement);
+  return hoverCardElement;
+}
+
+function showHoverInsight(event, analysis) {
+  if (!analysis) return;
+  const card = ensureHoverCardElement();
+  
+  if (analysis.variant === 'resume') {
+    const highlights = (analysis.highlights || []).slice(0, 2);
+    const tags = (analysis.badges || []).slice(0, 3);
+    card.innerHTML = `
+      <div class="ai-hover-header">
+        <span class="ai-hover-chip">Resume Pulse</span>
+        <span class="ai-hover-risk" style="color:${analysis.signalColor};">${analysis.signalLabel}</span>
+      </div>
+      <div class="ai-hover-score-row">
+        <span class="ai-hover-score">${analysis.score}</span>
+        <span class="ai-hover-sub">/100 profile</span>
+      </div>
+      <p class="ai-hover-summary">Focus: ${analysis.focusArea} • Tone: ${analysis.tone}</p>
+      <div class="ai-hover-flags">
+        <p class="ai-hover-subtle">Highlights</p>
+        <ul>${highlights.map(item => `<li>${item}</li>`).join('')}</ul>
+      </div>
+      <div class="ai-hover-tags">
+        ${tags.map(tag => `<span>${tag}</span>`).join('')}
+      </div>
+    `;
+  } else {
+    const riskMeta = getRiskMeta(analysis.trustScore);
+    const topRisks = analysis.redFlags.slice(0, 2);
+    const positives = analysis.greenFlags.slice(0, 2);
+    
+    card.innerHTML = `
+      <div class="ai-hover-header">
+        <span class="ai-hover-chip">Agentic AI Scan</span>
+        <span class="ai-hover-risk" style="color:${riskMeta.color};">${riskMeta.label}</span>
+      </div>
+      <div class="ai-hover-score-row">
+        <span class="ai-hover-score">${analysis.trustScore}</span>
+        <span class="ai-hover-sub">/100 confidence</span>
+      </div>
+      <p class="ai-hover-summary">${analysis.summary}</p>
+      <div class="ai-hover-flags">
+        <p class="ai-hover-subtle">${topRisks.length ? 'Top risks' : 'Risk scan'}</p>
+        ${topRisks.length 
+          ? `<ul>${topRisks.map(flag => `<li>${flag}</li>`).join('')}</ul>` 
+          : '<div class="ai-hover-pill">No critical risks spotted</div>'}
+      </div>
+      ${positives.length ? `
+        <div class="ai-hover-flags ai-hover-positive">
+          <p class="ai-hover-subtle">Positive signals</p>
+          <ul>${positives.map(flag => `<li>${flag}</li>`).join('')}</ul>
+        </div>
+      ` : ''}
+    `;
+  }
+  
+  moveHoverInsight(event);
+  requestAnimationFrame(() => {
+    card.dataset.visible = 'true';
+  });
+}
+
+function moveHoverInsight(event) {
+  if (!hoverCardElement) return;
+  const offsetX = 24;
+  const offsetY = 24;
+  const cardWidth = hoverCardElement.offsetWidth || 260;
+  const cardHeight = hoverCardElement.offsetHeight || 180;
+  let left = event.clientX + offsetX;
+  let top = event.clientY - offsetY - cardHeight / 2;
+  
+  if (left + cardWidth > window.innerWidth - 12) {
+    left = event.clientX - cardWidth - offsetX;
+  }
+  
+  if (left < 12) left = 12;
+  
+  if (top < 12) top = 12;
+  if (top + cardHeight > window.innerHeight - 12) {
+    top = window.innerHeight - cardHeight - 12;
+  }
+  
+  hoverCardElement.style.left = `${left}px`;
+  hoverCardElement.style.top = `${top}px`;
+}
+
+function hideHoverInsight() {
+  if (!hoverCardElement) return;
+  if (hoverHideTimeout) clearTimeout(hoverHideTimeout);
+  hoverHideTimeout = setTimeout(() => {
+    hoverCardElement.dataset.visible = 'false';
+  }, 120);
 }
 
 // ==================== ANALYSIS LOGIC ====================
@@ -246,6 +399,118 @@ function performAnalysis(text) {
     redFlags.push('No valid company email');
   }
   
+  if (/\b(telegram|whatsapp|signal|wechat|imo)\b/i.test(text)) {
+    trustScore -= 15;
+    redFlags.push('Requests chat apps for hiring');
+  }
+  
+  if (/\b(bitcoin|crypto|gift card|skrill)\b/i.test(text)) {
+    trustScore -= 20;
+    redFlags.push('Suspicious payment method');
+  }
+  
+  if (/\b(contact|reach|email)\b[^@]{0,40}\b(gmail|yahoo|hotmail)\b/i.test(text)) {
+    trustScore -= 10;
+    redFlags.push('Uses generic email provider');
+  }
+  
+  if (type === 'job_listing' && !/\b(responsibilities|requirements|qualifications)\b/i.test(text)) {
+    trustScore -= 8;
+    redFlags.push('Missing responsibilities/requirements section');
+  }
+  
+  const bulletPoints = (text.match(/[\r\n]+[\s]*(?:[-•*]|[0-9]+\.)/g) || []).length;
+  if (bulletPoints >= 4) {
+    trustScore += Math.min(12, bulletPoints * 1.5);
+    greenFlags.push('Structured bullet-point details');
+  }
+  
+  const salaryPattern = /\b(salary|ctc|compensation|pay range)\b[^$€₹£]{0,40}(\$|€|₹|£)?\d+/i;
+  if (salaryPattern.test(text)) {
+    trustScore += 8;
+    greenFlags.push('Shares compensation details');
+  }
+  
+  if (/\b(remote|hybrid|onsite|relocation)\b/i.test(text)) {
+    trustScore += 4;
+    greenFlags.push('Clarifies work model');
+  }
+  
+  if (/\b(employment type|job type|schedule)\b/i.test(text)) {
+    trustScore += 4;
+    greenFlags.push('States employment type');
+  }
+  
+  if (/\b(hiring manager|talent acquisition|recruiter|hr team)\b/i.test(text)) {
+    trustScore += 3;
+    greenFlags.push('Mentions hiring contact');
+  }
+  
+  if (/\b(click\s+(here|link))\b/i.test(text) && !/\b(company\b|\bcareers?\b)/i.test(text)) {
+    trustScore -= 8;
+    redFlags.push('Generic “click here” instruction');
+  }
+  
+  if (/\b(llc|inc\.?|ltd|corp\.?|gmbh|pte)\b/i.test(text)) {
+    trustScore += 6;
+    greenFlags.push('Registered company reference');
+  }
+  
+  const legalese = /\b(equal opportunity|eeo|background check|employment verification)\b/i;
+  if (legalese.test(text)) {
+    trustScore += 5;
+    greenFlags.push('Mentions compliance policies');
+  }
+  
+  if (/\b(click here\b|\bapply via\b).{0,80}(?:tinyurl|bit\.ly|goo\.gl)/i.test(text)) {
+    trustScore -= 12;
+    redFlags.push('Uses shortened links');
+  }
+  
+  if (/\b(training fee|security deposit|processing fee)\b/i.test(text)) {
+    trustScore -= 18;
+    redFlags.push('Fee mentioned in hiring process');
+  }
+  
+  if (text.length < 400 && type === 'job_listing') {
+    trustScore -= 10;
+    redFlags.push('Very short description');
+  } else if (text.length > 2000) {
+    trustScore += 6;
+    greenFlags.push('Detailed listing');
+  }
+  
+  const uppercaseRatio = (text.match(/[A-Z]{4,}/g) || []).join('').length / Math.max(text.length, 1);
+  if (uppercaseRatio > 0.08) {
+    trustScore -= 6;
+    redFlags.push('Excessive uppercase text');
+  }
+  
+  const wordCount = text.split(/\s+/).length;
+  if (wordCount >= 900) {
+    trustScore += 6;
+    greenFlags.push('Thorough role breakdown');
+  } else if (wordCount < 220 && type === 'job_listing') {
+    trustScore -= 6;
+    redFlags.push('Too little information');
+  }
+  
+  const actionVerbs = (text.match(/\b(design|build|lead|coordinate|deliver|implement|support|optimize|drive|scale|mentor)\b/gi) || []).length;
+  if (actionVerbs >= 12) {
+    trustScore += 5;
+    greenFlags.push('Uses concrete action verbs');
+  }
+  
+  if (/\b(send (copy of|scan of) your (id|passport|license))\b/i.test(text)) {
+    trustScore -= 25;
+    redFlags.push('Requests sensitive personal documents');
+  }
+  
+  if (/\b(refundable deposit|training bond)\b/i.test(text)) {
+    trustScore -= 20;
+    redFlags.push('Mentions deposit/bond');
+  }
+  
   // Green flags
   if (/\b(company website|official site|career page)\b/i.test(text)) {
     trustScore += 10;
@@ -262,16 +527,46 @@ function performAnalysis(text) {
     greenFlags.push('Clear hiring process');
   }
   
+  const deterministicNoise = getDeterministicNoise(text);
+  trustScore += deterministicNoise;
+  
   // Keep score in 0-100 range
   trustScore = Math.max(0, Math.min(100, trustScore));
+  
+  const riskMeta = getRiskMeta(trustScore);
   
   return {
     type,
     trustScore,
     redFlags,
     greenFlags,
-    summary: generateSummary(type, trustScore, text)
+    summary: generateSummary(type, trustScore, text),
+    riskLevel: riskMeta.label,
+    riskColor: riskMeta.color,
+    variant: type === 'resume' ? 'resume' : 'job'
   };
+}
+
+function getRiskMeta(score) {
+  if (score >= 75) {
+    return { label: 'Low risk', color: '#34d399' };
+  }
+  
+  if (score >= 55) {
+    return { label: 'Moderate risk', color: '#fbbf24' };
+  }
+  
+  return { label: 'High risk', color: '#f87171' };
+}
+
+function getDeterministicNoise(text) {
+  if (!text) return 0;
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash << 5) - hash) + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return (hash % 11) - 5; // -5 .. +5
 }
 
 function generateSummary(type, trustScore, text) {
@@ -358,6 +653,11 @@ function showLoadingNotification(message) {
   `;
   
   document.body.appendChild(notif);
+}
+
+function hideLoadingNotification() {
+  const notif = document.getElementById('ai-loading-notif');
+  if (notif) notif.remove();
 }
 
 // ==================== MODAL SYSTEM ====================
@@ -458,6 +758,11 @@ function showAnalysisModal(analysis, sourceElement) {
 }
 
 function showPDFAnalysisModal(analysis, text, filename) {
+  if (analysis.type === 'resume') {
+    showResumeInsights(text || '');
+  } else {
+    removeResumeInsightsPanel();
+  }
   showAnalysisModal(analysis, null);
 }
 
@@ -556,6 +861,252 @@ function detectType(text) {
   return 'unknown';
 }
 
+function isLikelyJobText(text) {
+  if (!text) return false;
+  const normalized = text.toLowerCase();
+  const lengthScore = Math.min(10, Math.floor(text.length / 600));
+  const keywordSets = [
+    ['responsibilities', 'role'],
+    ['requirements', 'qualifications'],
+    ['experience', 'years'],
+    ['salary', 'compensation'],
+    ['apply', 'application'],
+    ['benefits', 'perks'],
+    ['team', 'company']
+  ];
+  
+  let hitScore = 0;
+  keywordSets.forEach(set => {
+    if (set.every(word => normalized.includes(word))) {
+      hitScore += 4;
+    } else if (set.some(word => normalized.includes(word))) {
+      hitScore += 2;
+    }
+  });
+  
+  const bulletCount = (text.match(/[\r\n]+[\s]*(?:[-•*]|[0-9]+\.)/g) || []).length;
+  const bulletScore = Math.min(6, bulletCount * 1.5);
+  
+  const colonSections = (text.match(/\b[A-Z][A-Za-z\s]{2,40}:/g) || []).length;
+  const structureScore = Math.min(6, colonSections * 1.2);
+  
+  return (hitScore + bulletScore + structureScore + lengthScore) >= 12;
+}
+
+// ==================== RESUME INSIGHTS ====================
+function showResumeInsights(text) {
+  const insights = analyzeResumeContent(text);
+  if (!insights) return;
+  
+  if (!resumeInsightPanel) {
+    resumeInsightPanel = document.createElement('div');
+    resumeInsightPanel.id = 'ai-resume-panel';
+    resumeInsightPanel.setAttribute('role', 'status');
+    resumeInsightPanel.setAttribute('aria-live', 'polite');
+    document.body.appendChild(resumeInsightPanel);
+  }
+  
+  resumeInsightPanel.innerHTML = `
+    <button class="ai-resume-close" aria-label="Close resume insights">×</button>
+    <div class="ai-resume-header">
+      <div>
+        <p class="ai-resume-kicker">Agentic AI Resume Pulse</p>
+        <h3>Profile Confidence</h3>
+      </div>
+      <div class="ai-resume-score-chip">
+        <span>${insights.score}</span>
+        <small>/100</small>
+      </div>
+    </div>
+    <div class="ai-resume-meta">
+      <div>
+        <p class="ai-resume-label">Signal</p>
+        <p class="ai-resume-value">${insights.signalLabel}</p>
+      </div>
+      <div>
+        <p class="ai-resume-label">Focus</p>
+        <p class="ai-resume-value">${insights.focusArea}</p>
+      </div>
+      <div>
+        <p class="ai-resume-label">Tone</p>
+        <p class="ai-resume-value">${insights.tone}</p>
+      </div>
+    </div>
+    <div class="ai-resume-highlights">
+      ${insights.highlights.map(item => `
+        <div class="ai-resume-highlight">
+          <span class="ai-resume-dot"></span>
+          <p>${item}</p>
+        </div>
+      `).join('')}
+    </div>
+    <div class="ai-resume-tags">
+      ${insights.badges.map(tag => `<span>${tag}</span>`).join('')}
+    </div>
+  `;
+  
+  const closeBtn = resumeInsightPanel.querySelector('.ai-resume-close');
+  if (closeBtn) {
+    closeBtn.onclick = removeResumeInsightsPanel;
+  }
+  
+  setupResumeHover(insights);
+}
+
+function removeResumeInsightsPanel() {
+  if (resumeInsightPanel) {
+    resumeInsightPanel.remove();
+    resumeInsightPanel = null;
+  }
+  removeResumeHover();
+}
+
+function setupResumeHover(insights) {
+  resumeHoverPayload = {
+    variant: 'resume',
+    score: insights.score,
+    highlights: insights.highlights,
+    badges: insights.badges,
+    tone: insights.tone,
+    focusArea: insights.focusArea,
+    signalLabel: insights.signalLabel,
+    signalColor: insights.signalColor
+  };
+  
+  if (resumeHoverHandler) return;
+  
+  resumeHoverHandler = (event) => {
+    if (!resumeHoverPayload) return;
+    if (event.target.closest('#ai-resume-panel')) return;
+    showHoverInsight(event, resumeHoverPayload);
+  };
+  
+  document.body.addEventListener('mousemove', resumeHoverHandler, { passive: true });
+  document.body.addEventListener('mouseleave', hideHoverInsight);
+}
+
+function removeResumeHover() {
+  if (resumeHoverHandler) {
+    document.body.removeEventListener('mousemove', resumeHoverHandler);
+    resumeHoverHandler = null;
+  }
+  document.body.removeEventListener('mouseleave', hideHoverInsight);
+  resumeHoverPayload = null;
+}
+
+function analyzeResumeContent(text) {
+  if (!text || text.length < 200) {
+    return null;
+  }
+  
+  let score = 62;
+  const highlights = [];
+  const badges = [];
+  const normalized = text.toLowerCase();
+  
+  const sections = [
+    { pattern: /\b(work experience|professional experience|employment history)\b/i, weight: 8, badge: 'Experience depth' },
+    { pattern: /\b(education|academic background)\b/i, weight: 6, badge: 'Education detailed' },
+    { pattern: /\b(skill[s]?|core competencies|technical skills)\b/i, weight: 6, badge: 'Skill stack' },
+    { pattern: /\b(projects?|case studies|portfolio)\b/i, weight: 5, badge: 'Project showcase' },
+    { pattern: /\b(certifications?|awards|recognition)\b/i, weight: 4, badge: 'Credentials' }
+  ];
+  
+  sections.forEach(section => {
+    if (section.pattern.test(text)) {
+      score += section.weight;
+      badges.push(section.badge);
+    }
+  });
+  
+  const metricsMatches = (text.match(/\b\d+%|\b\d+[kKmM]?\b/g) || []).length;
+  if (metricsMatches >= 4) {
+    score += 8;
+    highlights.push('Strong quantified impact throughout the resume.');
+  } else if (metricsMatches >= 2) {
+    score += 5;
+    highlights.push('Some measurable achievements detected.');
+  }
+  
+  const leadershipSignals = /\b(led|managed|mentored|spearheaded|directed|orchestrated|built)\b/i.test(text);
+  if (leadershipSignals) {
+    score += 4;
+    highlights.push('Leadership verbs showcase ownership mindset.');
+  }
+  
+  const actionLines = text
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(line => line.length > 0);
+  
+  const quantifiedLines = actionLines.filter(line => /\d/.test(line) && /\b(led|managed|built|designed|grew|scaled|reduced|accelerated|optimized|delivered)\b/i.test(line));
+  
+  quantifiedLines.slice(0, 2).forEach(line => {
+    highlights.push(line.replace(/^[-•\s]+/, ''));
+  });
+  
+  const skillMatches = normalized.match(/\b(python|java|javascript|react|node|sql|aws|azure|gcp|design|figma|marketing|sales|analysis|ai|ml|data|leadership|product|finance)\b/g) || [];
+  if (skillMatches.length >= 6) {
+    score += 6;
+    badges.push('Wide skill coverage');
+  } else if (skillMatches.length >= 3) {
+    score += 3;
+  }
+  
+  const tone = (() => {
+    const firstPerson = (normalized.match(/\b(i |my |me |mine )/g) || []).length;
+    if (firstPerson >= 20) return 'Personal';
+    if (firstPerson <= 5) return 'Objective';
+    return 'Balanced';
+  })();
+  
+  const focusArea = (() => {
+    if (normalized.includes('engineer') || normalized.includes('developer')) return 'Technical';
+    if (normalized.includes('design') || normalized.includes('ux')) return 'Design';
+    if (normalized.includes('marketing') || normalized.includes('sales')) return 'Growth';
+    if (normalized.includes('product manager') || normalized.includes('roadmap')) return 'Product';
+    return 'General';
+  })();
+  
+  const signalLabel = score >= 85 ? 'Interview Ready' :
+                      score >= 70 ? 'Strong Signal' :
+                      score >= 55 ? 'Emerging Profile' : 'Needs Clarity';
+  const signalColor = getResumeSignalColor(signalLabel);
+  
+  const uniqueHighlights = Array.from(new Set(highlights)).slice(0, 3);
+  if (uniqueHighlights.length === 0) {
+    uniqueHighlights.push('Solid foundational resume detected.');
+  }
+  
+  let uniqueBadges = Array.from(new Set(badges));
+  if (uniqueBadges.length === 0) {
+    uniqueBadges = ['Baseline profile'];
+  }
+  
+  return {
+    score: Math.min(100, Math.max(45, Math.round(score))),
+    highlights: uniqueHighlights,
+    badges: uniqueBadges.slice(0, 4),
+    tone,
+    focusArea,
+    signalLabel,
+    signalColor
+  };
+}
+
+function getResumeSignalColor(label) {
+  switch (label) {
+    case 'Interview Ready':
+      return '#22c55e';
+    case 'Strong Signal':
+      return '#38bdf8';
+    case 'Emerging Profile':
+      return '#fbbf24';
+    default:
+      return '#f87171';
+  }
+}
+
 // ==================== FIXED PDF SUPPORT (CSP-SAFE) ====================
 
 async function setupPDFSupport() {
@@ -569,6 +1120,7 @@ async function setupPDFSupport() {
   } else if (hasPDFLinks || hasFileInputs) {
     if (hasPDFLinks) monitorPDFLinks();
     if (hasFileInputs) monitorFileUploads();
+    startPDFObserver();
   }
 }
 
@@ -711,4 +1263,113 @@ async function extractTextFromBlob(blob) {
     console.error('PDF blob extraction error:', error);
     return null;
   }
+}
+
+async function analyzePDFPage() {
+  try {
+    showLoadingNotification('Agentic AI scanning PDF…');
+    const pdfText = await extractTextFromPDF(window.location.href);
+    hideLoadingNotification();
+    if (!pdfText) {
+      showNotification('Unable to read PDF', 'error');
+      return;
+    }
+    const analysis = performAnalysis(pdfText);
+    if (analysis.type === 'resume') {
+      showResumeInsights(pdfText);
+    } else {
+      removeResumeInsightsPanel();
+    }
+    showPDFAnalysisModal(analysis, pdfText, extractFileName(window.location.href));
+  } catch (error) {
+    console.error('PDF page analysis failed', error);
+    hideLoadingNotification();
+    showNotification('PDF scan failed', 'error');
+  }
+}
+
+function monitorPDFLinks() {
+  document.querySelectorAll('a[href$=".pdf"]').forEach(link => {
+    if (link.dataset.aiPdfBound) return;
+    link.dataset.aiPdfBound = 'true';
+    
+    link.addEventListener('click', (event) => {
+      const url = link.href || event.currentTarget.href;
+      if (!url) return;
+      setTimeout(() => analyzePDFUrl(url), 400);
+    });
+  });
+}
+
+function monitorFileUploads() {
+  document.querySelectorAll('input[type="file"]').forEach(input => {
+    if (input.dataset.aiPdfBound) return;
+    input.dataset.aiPdfBound = 'true';
+    
+    input.addEventListener('change', async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const isPDF = file.type === 'application/pdf' || (file.name && file.name.toLowerCase().endsWith('.pdf'));
+      if (!isPDF) return;
+      showLoadingNotification('Scanning local PDF resume…');
+      const text = await extractTextFromBlob(file);
+      hideLoadingNotification();
+      if (!text) {
+        showNotification('Unable to parse PDF', 'error');
+        return;
+      }
+      const analysis = performAnalysis(text);
+      if (analysis.type === 'resume') {
+        showResumeInsights(text);
+      } else {
+        removeResumeInsightsPanel();
+      }
+      showPDFAnalysisModal(analysis, text, file.name);
+    });
+  });
+}
+
+async function analyzePDFUrl(url) {
+  try {
+    const text = await extractTextFromPDF(url);
+    if (!text) return;
+    const analysis = performAnalysis(text);
+    if (analysis.type === 'resume') {
+      showResumeInsights(text);
+    }
+    showPDFAnalysisModal(analysis, text, extractFileName(url));
+  } catch (error) {
+    console.error('Linked PDF analysis failed', error);
+  }
+}
+
+function extractFileName(url) {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname || '';
+    return pathname.split('/').pop() || 'document.pdf';
+  } catch {
+    return 'document.pdf';
+  }
+}
+
+function startPDFObserver() {
+  if (pdfObserver || !document.body) return;
+  pdfObserver = new MutationObserver(() => {
+    monitorPDFLinks();
+    monitorFileUploads();
+  });
+  pdfObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function startDomObserver() {
+  if (domObserver || !document.body) return;
+  domObserver = new MutationObserver(() => {
+    if (domObserverTimeout) clearTimeout(domObserverTimeout);
+    domObserverTimeout = setTimeout(() => {
+      highlightJobListings();
+      analyzeJobCards();
+    }, 600);
+  });
+  domObserver.observe(document.body, { childList: true, subtree: true });
 }
