@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    :root {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --shell-radius: 28px;
+      --dark-bg: #050914;
+      --dark-card: rgba(13, 17, 30, 0.85);
+      --dark-stroke: rgba(148, 163, 184, 0.2);
+      --dark-text: #f8fafc;
+      --light-bg: #f8fafc;
+      --light-card: rgba(255, 255, 255, 0.9);
+      --light-stroke: rgba(15, 23, 42, 0.08);
+      --light-text: #0f172a;
+      --accent: linear-gradient(120deg, #5eead4, #818cf8);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 380px;
+      min-height: 560px;
+      padding: 24px;
+      background: var(--dark-bg);
+      color: var(--dark-text);
+    }
+
+    body[data-theme="light"] {
+      background: var(--light-bg);
+      color: var(--light-text);
+    }
+
+    .shell {
+      background: var(--dark-card);
+      border-radius: var(--shell-radius);
+      border: 1px solid var(--dark-stroke);
+      padding: 24px;
+      box-shadow: 0 30px 60px rgba(5, 7, 12, 0.4);
+    }
+
+    body[data-theme="light"] .shell {
+      background: var(--light-card);
+      border-color: var(--light-stroke);
+      box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
+    }
+
+    .hero-pill {
+      display: inline-flex;
+      padding: 4px 14px;
+      border-radius: 999px;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      background: rgba(94, 234, 212, 0.15);
+      color: #5eead4;
+      margin-bottom: 14px;
+    }
+
+    .hero h1 {
+      font-size: 24px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+
+    .hero p {
+      font-size: 13px;
+      color: rgba(226, 232, 240, 0.85);
+    }
+
+    body[data-theme="light"] .hero p {
+      color: rgba(15, 23, 42, 0.7);
+    }
+
+    .mode-toggle {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin: 22px 0;
+    }
+
+    .mode-btn {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 999px;
+      padding: 8px 0;
+      font-size: 13px;
+      font-weight: 600;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .mode-btn.active {
+      border-color: transparent;
+      background: var(--accent);
+      color: #050914;
+    }
+
+    .card {
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 20px;
+      padding: 18px;
+      backdrop-filter: blur(14px);
+      margin-bottom: 16px;
+    }
+
+    body[data-theme="light"] .card {
+      border-color: rgba(15, 23, 42, 0.08);
+    }
+
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(148, 163, 184, 0.9);
+      margin-bottom: 2px;
+    }
+
+    .status-chip {
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      background: rgba(34, 197, 94, 0.18);
+      color: #22c55e;
+    }
+
+    .status-chip.inactive {
+      background: rgba(248, 113, 113, 0.18);
+      color: #f87171;
+    }
+
+    .toggle-switch {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: 14px;
+      font-weight: 600;
+      color: inherit;
+    }
+
+    .toggle-switch input {
+      appearance: none;
+      width: 48px;
+      height: 26px;
+      border-radius: 999px;
+      background: rgba(94, 234, 212, 0.25);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-switch input::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #050914;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch input:checked::after {
+      transform: translateX(22px);
+    }
+
+    body[data-theme="light"] .toggle-switch input::after {
+      background: #fff;
+    }
+
+    .action-btn {
+      width: 100%;
+      padding: 14px;
+      border-radius: 16px;
+      border: none;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      margin-bottom: 10px;
+    }
+
+    .action-btn.primary {
+      background: var(--accent);
+      color: #050914;
+      box-shadow: 0 12px 30px rgba(94, 234, 212, 0.4);
+    }
+
+    .action-btn.ghost {
+      background: rgba(148, 163, 184, 0.15);
+      color: inherit;
+    }
+
+    .action-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .feature-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 13px;
+      color: rgba(226, 232, 240, 0.9);
+    }
+
+    body[data-theme="light"] .feature-list {
+      color: rgba(15, 23, 42, 0.75);
+    }
+
+    .feature-list li {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .feature-list li span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #5eead4;
+      flex-shrink: 0;
+    }
+
+    .footer {
+      text-align: center;
+      font-size: 11px;
+      color: rgba(226, 232, 240, 0.7);
+      margin-top: 12px;
+    }
+
+    body[data-theme="light"] .footer {
+      color: rgba(15, 23, 42, 0.6);
+    }
+  </style>
+</head>
+<body data-theme="dark">
+  <div class="shell">
+    <header class="hero">
+      <div class="hero-pill">Agentic mode</div>
+      <h1>Job Sentinel</h1>
+      <p>Live trust scoring for job listings, resumes and PDFs.</p>
+    </header>
+
+    <div class="mode-toggle" role="group" aria-label="Theme switch">
+      <button class="mode-btn active" data-theme-option="dark">Dark</button>
+      <button class="mode-btn" data-theme-option="light">Light</button>
+    </div>
+
+    <section class="card status-card">
+      <div class="card-head">
+        <div>
+          <p class="eyebrow">Live status</p>
+          <h2 id="statusCopy">Enabled</h2>
+        </div>
+        <span class="status-chip" id="statusBadge">Active</span>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="extensionToggle" checked>
+        <span class="toggle-label">Agentic AI scanner</span>
+      </label>
+    </section>
+
+    <section class="card action-card">
+      <button class="action-btn primary" id="analyzeBtn">Pulse this page</button>
+      <button class="action-btn ghost" id="refreshBtn">Re-run hover insights</button>
+      <button class="action-btn ghost" id="visitWebsiteBtn" style="margin-top: 8px;">🌐 Visit our website</button>
+    </section>
+
+    <section class="card feature-card">
+      <div class="card-head">
+        <p class="eyebrow">Quick intel</p>
+      </div>
+      <ul class="feature-list">
+        <li><span></span>Hover anywhere on job cards for trust/risk</li>
+        <li><span></span>Resume pulse panel with highlights & score</li>
+        <li><span></span>PDF parsing works for web + local files</li>
+        <li><span></span>Light/Dark UI syncs with hover surfaces</li>
+      </ul>
+    </section>
+
+    <footer class="footer">
+      Agentic AI Build v2.1 • LinkedIn, Naukri, Indeed + PDFs
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
