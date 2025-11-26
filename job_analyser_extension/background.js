@@ -26,6 +26,19 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     return true; // Keep message channel open
   }
   
+  if (request.action === 'fetchPdfBuffer') {
+    fetch(request.url, { credentials: 'include' })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Failed to fetch PDF (${response.status})`);
+        }
+        return response.arrayBuffer();
+      })
+      .then(buffer => sendResponse({ success: true, buffer }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  
   // If no matching action, return false
   return false;
 });

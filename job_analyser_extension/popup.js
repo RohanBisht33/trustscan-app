@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const browser = window.browser || window.chrome;
   const analyzeBtn = document.getElementById('analyzeBtn');
   const refreshBtn = document.getElementById('refreshBtn');
+  const visitWebsiteBtn = document.getElementById('visitWebsiteBtn');
   const extensionToggle = document.getElementById('extensionToggle');
   const statusBadge = document.getElementById('statusBadge');
   const statusCopy = document.getElementById('statusCopy');
@@ -30,6 +31,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   analyzeBtn.addEventListener('click', () => runAnalysis({ closePopup: true }));
   refreshBtn.addEventListener('click', () => runAnalysis({ closePopup: false }));
+  
+  visitWebsiteBtn.addEventListener('click', () => {
+    browser.tabs.create({ url: browser.runtime.getURL('website/index.html') });
+    window.close();
+  });
 
   extensionToggle.addEventListener('change', () => {
     if (toggling) return;
