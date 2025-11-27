@@ -16,10 +16,41 @@ let hoverHandlerMap = new WeakMap();
 let domObserver = null;
 let domObserverTimeout = null;
 let modalHandlerMap = new WeakMap();
+let processedTextHashes = new Set();
+let hoverGuideElement = null;
+let hoverGuideDismissed = false;
+
+// Track current page mode to avoid random-site triggers
+let currentPageMode = 'unknown'; // 'job' | 'resume' | 'unknown'
+
+function isJobHost() {
+  const hostname = (window.location.hostname || '').toLowerCase();
+  return [
+    'linkedin.com',
+    'internshala.com',
+    'naukri.com',
+    'indeed.com',
+    'glassdoor.com',
+    'wellfound.com',
+    'monster.com'
+  ].some(domain => hostname.includes(domain));
+}
+
+function isDocHost() {
+  const hostname = (window.location.hostname || '').toLowerCase();
+  return [
+    'google.com',
+    'drive.google.com',
+    'dropbox.com',
+    'githubusercontent.com',
+    'flowcv.com',
+    'flowcv.io'
+  ].some(domain => hostname.includes(domain));
+}
 
 // ==================== MESSAGE LISTENER ====================
 browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
-  console.log('📨 Message received:', request.action);
+  console.log('ðŸ“¨ Message received:', request.action);
   
   if (request.action === 'analyzeFullPage') {
     analyzeCurrentPage();
@@ -29,13 +60,13 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   
   if (request.action === 'toggleExtension') {
     extensionEnabled = request.enabled;
-    console.log('🔄 Extension toggled:', extensionEnabled);
+    console.log('ðŸ”„ Extension toggled:', extensionEnabled);
     
     if (extensionEnabled) {
-      showNotification('✅ Extension Enabled');
+      showNotification('âœ… Extension Enabled');
       analyzeCurrentPage();
     } else {
-      showNotification('⏸️ Extension Disabled');
+      showNotification('â¸ï¸ Extension Disabled');
       removeAllIndicators();
     }
     
@@ -54,7 +85,7 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 
 // ==================== INITIALIZATION ====================
 (function init() {
-  console.log('🚀 AI Job & Resume Analyzer loaded');
+  console.log('ðŸš€ TrustScan loaded');
   
   // Check if extension is enabled
   browser.storage.local.get(['extensionEnabled', 'uiTheme'], function(result) {
@@ -63,7 +94,7 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     applyThemeToPage(storedTheme);
     
     if (extensionEnabled) {
-      console.log('✅ Extension is enabled');
+      console.log('âœ… Extension is enabled');
       
       // Wait for page to be fully loaded
       if (document.readyState === 'loading') {
@@ -72,7 +103,7 @@ browser.runtime.onMessage.addListener(function(request, sender, sendResponse) {
         startAnalysis();
       }
     } else {
-      console.log('⏸️ Extension is disabled');
+      console.log('â¸ï¸ Extension is disabled');
     }
   });
 })();
@@ -97,48 +128,77 @@ function applyThemeToPage(theme) {
 // ==================== MAIN ANALYSIS FUNCTION ====================
 function analyzeCurrentPage() {
   if (!extensionEnabled) {
-    console.log('⏸️ Analysis skipped - extension disabled');
+    console.log('â¸ï¸ Analysis skipped - extension disabled');
     return;
   }
   
-  console.log('🔍 Analyzing current page...');
+  console.log('ðŸ” Analyzing current page...');
   
   const pageText = extractPageText();
   
   if (pageText.length < 100) {
-    console.log('⚠️ Page text too short, skipping analysis');
+    console.log('âš ï¸ Page text too short, skipping analysis');
     return;
   }
   
   const type = detectType(pageText);
-  const looksLikeJob = type === 'job_listing' || isLikelyJobText(pageText) || isFullJobDescription(pageText);
-  const looksLikeResume = type === 'resume' || isLikelyResumeText(pageText);
+
+  const looksLikeJob = type === 'job_listing' || isFullJobDescription(pageText) || (isJobHost() && isLikelyJobText(pageText));
+  const looksLikeResume = type === 'resume' || (isDocHost() && isLikelyResumeText(pageText)) || (!isJobHost() && isLikelyResumeText(pageText));
   const primaryJobBlock = findPrimaryJobDescription();
   const jobAnalysisTarget = primaryJobBlock ? primaryJobBlock.text : pageText;
   const trimmedJobText = (jobAnalysisTarget || '').trim();
-  const shouldTreatAsJob = (looksLikeJob && !looksLikeResume) || (!!primaryJobBlock && !looksLikeResume);
-  console.log('📊 Detected type:', type, 'job?', looksLikeJob, 'resume?', looksLikeResume, 'primary block?', !!primaryJobBlock);
+  
+  // More aggressive job detection: if on job host, prioritize job detection
+  // Only treat as resume if we're on a doc host or explicitly detected as resume
+  const isExplicitlyResume = type === 'resume' || (isDocHost() && isLikelyResumeText(pageText));
+  const hostname = window.location.hostname;
+  const hasJobCards = document.querySelectorAll('.individual_internship, .job-card-container, .jobs-search-results__list-item, .jobTuple, .job_seen_beacon, .react-job-listing').length > 0;
+  // If on job host, treat as job unless explicitly resume - be very lenient
+  const shouldTreatAsJob = isJobHost() && !isExplicitlyResume && (looksLikeJob || !!primaryJobBlock || hasJobCards || type !== 'resume');
+  console.log('ðŸ“Š Detected type:', type, 'job?', looksLikeJob, 'resume?', looksLikeResume, 'primary block?', !!primaryJobBlock, 'hasJobCards?', hasJobCards, 'shouldTreatAsJob?', shouldTreatAsJob, 'isJobHost?', isJobHost());
   
   if (shouldTreatAsJob) {
+    currentPageMode = 'job';
     removeResumeInsightsPanel();
     removeResumeHover();
-    showNotification('💼 Job listing detected — hover highlighted sections for trust score.', 'success');
-    highlightJobListings();
-    highlightFullJobDescriptions();
     
-    if (primaryJobBlock && primaryJobBlock.element) {
-      addJobIndicator(primaryJobBlock.element, primaryJobBlock.analysis);
-    }
+    // Check if we're on an Internshala listing page (multiple job cards) - don't treat whole page as one job
+    const hostname = window.location.hostname;
+    const internshalaCards = document.querySelectorAll('.individual_internship');
+    const isInternshalaListingPage = hostname.includes('internshala.com') && internshalaCards.length > 1;
     
-    // Attach global hover based on the cleanest job block available
-    if (trimmedJobText.length > 260) {
-      const pageAnalysis = primaryJobBlock ? primaryJobBlock.analysis : performAnalysis(trimmedJobText);
-      attachHoverToPageBody(pageAnalysis);
-    } else {
+    if (isInternshalaListingPage) {
+      // On Internshala listing pages, ONLY analyze individual cards, NEVER the whole page
+      showNotification('ðŸ’¼ Job listings detected â€” hover over individual cards for trust scores.', 'success');
+      // Explicitly skip all full-page analysis
       removePageHover();
+      // Don't call highlightFullJobDescriptions, findPrimaryJobDescription, or highlightJobListings on listing pages
+      // Only analyze individual cards via analyzeJobCards (called below)
+    } else {
+      // On detail pages or other sites, analyze the full job description
+      showNotification('ðŸ’¼ Job listing detected â€” hover highlighted sections for trust score.', 'success');
+      highlightJobListings();
+      highlightFullJobDescriptions();
+      
+      if (primaryJobBlock && primaryJobBlock.element) {
+        addJobIndicator(primaryJobBlock.element, primaryJobBlock.analysis);
+        rememberTextSignature(primaryJobBlock.signature || getTextSignature(primaryJobBlock.text));
+      }
+      
+      // Attach global hover based on the cleanest job block available
+      if (trimmedJobText.length > 260) {
+        const pageAnalysis = primaryJobBlock ? primaryJobBlock.analysis : performAnalysis(trimmedJobText);
+        const pageSignature = primaryJobBlock?.signature || getTextSignature(trimmedJobText);
+        if (pageSignature) rememberTextSignature(pageSignature);
+        attachHoverToPageBody(pageAnalysis);
+      } else {
+        removePageHover();
+      }
     }
   } else if (looksLikeResume) {
-    showNotification('📄 Resume detected — hover anywhere to view ATS score.', 'info');
+    currentPageMode = 'resume';
+    showNotification('ðŸ“„ Resume detected â€” hover anywhere to view ATS score.', 'info');
     removePageHover();
     // Only show hover popup, no panel
     const resumeAnalysis = analyzeResumeContent(pageText);
@@ -146,13 +206,40 @@ function analyzeCurrentPage() {
       attachResumeHoverToPageBody(resumeAnalysis);
     }
   } else {
+    currentPageMode = 'unknown';
     removeResumeInsightsPanel();
     removePageHover();
-    console.log('❓ Content type unclear');
+    console.log('â“ Content type unclear');
   }
   
-  // Analyze specific job cards on job portals
-  analyzeJobCards();
+  // Analyze specific job cards on known job sites - ALWAYS try on job hosts
+  if (isJobHost()) {
+    const hostname = window.location.hostname;
+    const internshalaCards = document.querySelectorAll('.individual_internship');
+    const isInternshalaListing = hostname.includes('internshala.com') && internshalaCards.length > 0;
+    const allJobCards = document.querySelectorAll('.individual_internship, .job-card-container, .jobs-search-results__list-item, .jobTuple, .job_seen_beacon, .react-job-listing');
+    const hasJobCards = allJobCards.length > 0;
+    
+    // For Internshala, always try to analyze cards even if page mode is unknown
+    if (isInternshalaListing && currentPageMode === 'unknown') {
+      console.log('ðŸ” Internshala detected, setting to job mode and analyzing cards...');
+      currentPageMode = 'job';
+      showNotification('ðŸ’¼ Job listings detected â€” hover over individual cards for trust scores.', 'success');
+    }
+    
+    // Always analyze job cards if we're on a job host
+    // Run if: in job mode, OR Internshala with cards, OR unknown mode with job cards found
+    if (currentPageMode === 'job' || isInternshalaListing || (currentPageMode === 'unknown' && hasJobCards)) {
+      if (currentPageMode === 'unknown' && hasJobCards) {
+        console.log('ðŸ” Found job cards on unknown page, setting to job mode and analyzing...');
+        currentPageMode = 'job';
+        if (!isInternshalaListing) {
+          showNotification('ðŸ’¼ Job listings detected â€” hover over cards for trust scores.', 'success');
+        }
+      }
+      analyzeJobCards();
+    }
+  }
 }
 
 function extractPageText() {
@@ -163,8 +250,72 @@ function extractPageText() {
   return clone.innerText || clone.textContent || '';
 }
 
+function getTextSignature(text) {
+  if (!text) return null;
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i++) {
+    hash = ((hash << 5) - hash) + normalized.charCodeAt(i);
+    hash |= 0;
+  }
+  return `${normalized.length}:${hash}`;
+}
+
+function hasSeenText(text) {
+  const signature = getTextSignature(text);
+  if (!signature) return { signature: null, seen: false };
+  return { signature, seen: processedTextHashes.has(signature) };
+}
+
+function rememberTextSignature(signature) {
+  if (signature) {
+    processedTextHashes.add(signature);
+  }
+}
+
+const SITE_JOB_SELECTORS = {
+  'linkedin.com': [
+    '.jobs-description__content',
+    '.jobs-details__main-content',
+    '.show-more-less-html__markup',
+    '.jobs-description'
+  ],
+  'indeed.com': [
+    '#jobDescriptionText',
+    '.jobsearch-jobDescriptionText',
+    '.jobsearch-JobComponent-description'
+  ],
+  'naukri.com': [
+    '.dang-innerHTML',
+    '.jd-container',
+    '#jobDescriptionText',
+    '.job-desc'
+  ],
+  'glassdoor.com': [
+    '.jobDescriptionContent',
+    '.desc',
+    '#JobDescriptionContainer'
+  ],
+  'wellfound.com': [
+    '.styles_jobDescription__',
+    '.ListingDetailPage-description'
+  ],
+  'monster.com': [
+    '#JobDescription',
+    '.job-description'
+  ]
+};
+
 function highlightJobListings() {
   if (!extensionEnabled) return;
+  // Avoid scanning random blogs/news/social: only on job hosts and when page is job-like
+  if (!isJobHost() || currentPageMode !== 'job') return;
+  // Skip on Internshala listing pages - only analyze individual cards (not full page)
+  const hostname = window.location.hostname;
+  if (hostname.includes('internshala.com') && document.querySelectorAll('.individual_internship').length > 1) {
+    return; // Skip full-page highlighting, but analyzeJobCards() will handle individual cards
+  }
   // Find common job listing containers
   const selectors = [
     '[class*="job"]',
@@ -188,10 +339,13 @@ function highlightJobListings() {
     
     const text = el.innerText;
     if (text && text.length > 80 && text.length < 50000) {
+      const { signature, seen } = hasSeenText(text);
+      if (seen) return;
       const analysis = performAnalysis(text);
       if (analysis.type === 'job_listing' || (analysis.type === 'unknown' && (isLikelyJobText(text) || isFullJobDescription(text)))) {
         addJobIndicator(el, analysis);
         analyzedElements.add(el);
+        rememberTextSignature(signature);
       }
     }
   });
@@ -199,6 +353,12 @@ function highlightJobListings() {
 
 function highlightFullJobDescriptions() {
   if (!extensionEnabled) return;
+  if (!isJobHost() || currentPageMode !== 'job') return;
+  // Skip on Internshala listing pages - only analyze individual cards
+  const hostname = window.location.hostname;
+  if (hostname.includes('internshala.com') && document.querySelectorAll('.individual_internship, [class*="internship"]').length > 1) {
+    return;
+  }
   const fullPageSelectors = [
     'main',
     'article',
@@ -219,10 +379,13 @@ function highlightFullJobDescriptions() {
     const text = el.innerText;
     if (!text || text.length < 400) return;
     if (!isFullJobDescription(text) && !isLikelyJobText(text)) return;
+    const { signature, seen } = hasSeenText(text);
+    if (seen) return;
 
     const analysis = performAnalysis(text);
     addJobIndicator(el, analysis);
     analyzedElements.add(el);
+    rememberTextSignature(signature);
 
     // Ensure global hover is available for true full-page descriptions
     if (text.length > 800) {
@@ -233,26 +396,37 @@ function highlightFullJobDescriptions() {
 
 function findPrimaryJobDescription() {
   if (!document || !document.body) return null;
-  const prioritySelectors = [
+  const hostname = (window.location.hostname || '').toLowerCase();
+  // Skip on Internshala listing pages - only analyze individual cards
+  if (hostname.includes('internshala.com') && document.querySelectorAll('.individual_internship, [class*="internship"]').length > 1) {
+    return null;
+  }
+  const hostSelectors = getSiteSpecificSelectors(hostname);
+  const baseSelectors = [
     '.jobs-details__main-content',
     '.jobs-description__content',
     '.jobDescription',
     '.job-description',
     '.description__text',
     '.job-details',
+    '.posting',
     '#job-details',
     'article',
     'main'
   ];
+  const prioritySelectors = Array.from(new Set([...hostSelectors, ...baseSelectors]));
 
   let bestCandidate = null;
 
   const evaluateElement = (el) => {
     if (!el) return;
     const text = getVisibleText(el);
+    if (!text || text.length < 200) return;
+    const { signature, seen } = hasSeenText(text);
+    if (seen) return;
     const score = scoreJobBlock(text);
     if (score > 0 && (!bestCandidate || score > bestCandidate.score)) {
-      bestCandidate = { element: el, text, score };
+      bestCandidate = { element: el, text, score, signature };
     }
   };
 
@@ -263,18 +437,27 @@ function findPrimaryJobDescription() {
   if (!bestCandidate || bestCandidate.score < 4) {
     const bodyTarget = document.querySelector('main') || document.body;
     const bodyText = getVisibleText(bodyTarget);
-    if (isFullJobDescription(bodyText) || isLikelyJobText(bodyText)) {
+    const { signature, seen } = hasSeenText(bodyText);
+    if (!seen && (isFullJobDescription(bodyText) || isLikelyJobText(bodyText))) {
       bestCandidate = {
         element: bodyTarget,
         text: bodyText,
-        score: 4
+        score: 4,
+        signature
       };
     }
   }
 
   if (!bestCandidate) return null;
   bestCandidate.analysis = performAnalysis(bestCandidate.text);
+  bestCandidate.analysis.signature = bestCandidate.signature || getTextSignature(bestCandidate.text);
   return bestCandidate;
+}
+
+function getSiteSpecificSelectors(hostname) {
+  if (!hostname) return [];
+  const entry = Object.entries(SITE_JOB_SELECTORS).find(([domain]) => hostname.includes(domain.replace(/^\./, '')));
+  return entry ? entry[1] : [];
 }
 
 function getVisibleText(node) {
@@ -298,9 +481,49 @@ function scoreJobBlock(text) {
   return score;
 }
 
+// Helper function to check if a card is an advertisement - less strict
+function isAdvertisementCard(card) {
+  if (!card) return true;
+  
+  // Check for common ad indicators in class names, IDs, or data attributes
+  const cardClasses = card.className || '';
+  const cardId = card.id || '';
+  const cardText = (card.innerText || '').toLowerCase();
+  
+  // Only filter obvious ads - be less strict
+  const obviousAdIndicators = [
+    'google-ads', 'adsense', 'advertisement-container', 'ad-wrapper', 'ad-banner'
+  ];
+  
+  // Check class names and IDs for obvious ad containers
+  const hasObviousAdClass = obviousAdIndicators.some(indicator => 
+    cardClasses.toLowerCase().includes(indicator) || 
+    cardId.toLowerCase().includes(indicator)
+  );
+  
+  // Check for explicit ad text (but not "sponsored job" which is legitimate)
+  const hasExplicitAdText = /\b(advertisement|ad\s+content|google\s+ads)\b/i.test(cardText) && 
+                           !/\b(sponsored\s+job|promoted\s+job)\b/i.test(cardText);
+  
+  // Check for common ad parent containers (but be lenient)
+  const parent = card.closest('[class*="google-ads"], [id*="google-ads"], [class*="adsense"], [id*="adsense"]');
+  
+  // Check if card is inside an iframe (common for ads)
+  const isInIframe = card.closest('iframe') !== null;
+  
+  // Only filter if it's clearly an ad
+  return hasObviousAdClass || (hasExplicitAdText && !cardText.includes('job') && !cardText.includes('internship')) || (parent !== null && isInIframe);
+}
+
 function analyzeJobCards() {
   if (!extensionEnabled) return;
-  // Specific selectors for popular job sites
+  if (!isJobHost()) return;
+  // Allow analysis even if page mode is unknown - we want to detect job cards on all job sites
+  const hostname = window.location.hostname;
+  const isInternshala = hostname.includes('internshala.com');
+  // Run analysis if we're in job mode OR if we're on a job host (be more lenient)
+  if (currentPageMode !== 'job' && currentPageMode !== 'unknown') return;
+  // Specific selectors for popular job sites - use original selectors, filter ads manually
   const jobCardSelectors = {
     'linkedin.com': '.job-card-container, .jobs-search-results__list-item',
     'naukri.com': '.jobTuple, .jobTupleHeader',
@@ -308,25 +531,97 @@ function analyzeJobCards() {
     'indeed.com': '.job_seen_beacon, .jobsearch-SerpJobCard',
     'glassdoor.com': '.react-job-listing'
   };
-  
-  const hostname = window.location.hostname;
   const selector = Object.keys(jobCardSelectors).find(key => hostname.includes(key));
   
   if (selector && jobCardSelectors[selector]) {
     const cards = document.querySelectorAll(jobCardSelectors[selector]);
-    console.log(`📋 Found ${cards.length} job cards on ${hostname}`);
+    console.log(`ðŸ“‹ Found ${cards.length} potential job cards on ${hostname}`);
     
-    cards.forEach(card => {
+    // Filter out advertisement cards
+    const realJobCards = Array.from(cards).filter(card => !isAdvertisementCard(card));
+    console.log(`âœ… Filtered to ${realJobCards.length} real job cards (removed ${cards.length - realJobCards.length} ads)`);
+    
+    // For Internshala listing pages, ensure we only process individual cards
+    const isInternshalaListing = isInternshala && realJobCards.length > 1;
+    
+    realJobCards.forEach(card => {
       if (analyzedElements.has(card)) return;
       
-      const text = card.innerText;
-      if (!text || text.length < 80) return;
+      // For Internshala, get ONLY the card's own content, not nested or parent content
+      let text = '';
+      if (isInternshala) {
+        // Get card-specific elements only
+        const cardClone = card.cloneNode(true);
+        // Remove nested internship cards to avoid grabbing multiple cards
+        cardClone.querySelectorAll('.individual_internship').forEach(nested => nested.remove());
+        
+        // Get title and key details from the card
+        const titleEl = cardClone.querySelector('.heading_4_5, .heading_6, h3, h4, [class*="title"], [class*="heading"]');
+        const companyEl = cardClone.querySelector('.company_name, [class*="company"]');
+        const locationEl = cardClone.querySelector('[class*="location"]');
+        const stipendEl = cardClone.querySelector('[class*="stipend"], [class*="salary"]');
+        const durationEl = cardClone.querySelector('[class*="duration"]');
+        
+        const parts = [];
+        if (titleEl) parts.push(titleEl.innerText.trim());
+        if (companyEl) parts.push(companyEl.innerText.trim());
+        if (locationEl) parts.push(locationEl.innerText.trim());
+        if (stipendEl) parts.push(stipendEl.innerText.trim());
+        if (durationEl) parts.push(durationEl.innerText.trim());
+        
+        text = parts.filter(p => p.length > 0).join(' â€¢ ');
+        
+        // If we still don't have enough, get first 500 chars of card text (but not nested cards)
+        if (text.length < 50) {
+          const directText = Array.from(cardClone.childNodes)
+            .filter(node => node.nodeType === Node.TEXT_NODE || (node.nodeType === Node.ELEMENT_NODE && !node.querySelector('.individual_internship')))
+            .map(node => node.textContent || '')
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          text = directText.substring(0, 800);
+        }
+        
+        // Strict limit for Internshala cards
+        if (text.length > 1000) {
+          text = text.substring(0, 1000);
+        }
+      } else {
+        text = card.innerText;
+      }
       
+      if (!text || text.length < 30) return;
+      
+      // On listing pages, be more lenient - card summaries are still jobs
+      const isListingPage = realJobCards.length > 1;
       const analysis = performAnalysis(text);
-      if (analysis.type !== 'job_listing' && !isLikelyJobText(text) && !isFullJobDescription(text)) return;
+      const looksLikeJob = analysis.type === 'job_listing' || 
+                          isLikelyJobText(text) || 
+                          (isListingPage && (text.length >= 30 && text.length <= 1000)); // Listing cards are shorter
       
-      addJobIndicator(card, analysis);
-      analyzedElements.add(card);
+      // Light ad check - only skip obvious ads
+      const isObviousAd = /\b(click here to download|sign up for free|limited time offer|special discount|buy now)\b/i.test(text) && 
+                         !/\b(job|internship|position|role|hiring|apply|company)\b/i.test(text);
+      
+      // Skip only obvious ads
+      if (isObviousAd) {
+        console.log('â­ï¸ Skipping obvious ad card:', text.substring(0, 50));
+        return;
+      }
+      
+      // For Internshala, always treat as job if we have reasonable text
+      if (isInternshala && text.length >= 20) {
+        addJobIndicator(card, analysis);
+        analyzedElements.add(card);
+      } else if (looksLikeJob || (isListingPage && text.length >= 30)) {
+        // Other sites: use normal job detection OR if listing page with reasonable text
+        addJobIndicator(card, analysis);
+        analyzedElements.add(card);
+      } else if (isJobHost() && text.length >= 50) {
+        // Fallback: if on job host with reasonable text, treat as job
+        addJobIndicator(card, analysis);
+        analyzedElements.add(card);
+      }
     });
   }
 }
@@ -336,8 +631,20 @@ function addJobIndicator(element, analysis) {
   if (!element || element.dataset.aiTagged === 'true') return;
   
   const sourceText = element.innerText || '';
+  const signature = (analysis && analysis.signature) || getTextSignature(sourceText);
+  if (signature && processedTextHashes.has(signature)) return;
   const computedAnalysis = analysis || performAnalysis(sourceText);
-  if (computedAnalysis.type !== 'job_listing' && !isLikelyJobText(sourceText) && !isFullJobDescription(sourceText)) return;
+  
+  // More lenient check - if we're on a job host and have analysis, allow it
+  // This ensures job cards on listing pages are detected even if they're short
+  const isOnJobHost = isJobHost();
+  const isShortCard = sourceText.length < 400;
+  const looksLikeJobCard = computedAnalysis.type === 'job_listing' || 
+                           isLikelyJobText(sourceText) || 
+                           isFullJobDescription(sourceText) ||
+                           (isOnJobHost && isShortCard && sourceText.length >= 30); // Allow short cards on job sites
+  
+  if (!looksLikeJobCard) return;
   
   element.dataset.aiTagged = 'true';
   element.classList.add('ai-agentic-card');
@@ -358,6 +665,7 @@ function addJobIndicator(element, analysis) {
   
   element.addEventListener('dblclick', modalHandler);
   modalHandlerMap.set(element, modalHandler);
+  rememberTextSignature(signature);
 }
 
 function removeAllIndicators() {
@@ -380,6 +688,7 @@ function removeAllIndicators() {
     el.style.removeProperty('--ai-risk-color');
   });
   analyzedElements = new WeakSet();
+  processedTextHashes = new Set();
   hideHoverInsight();
   removeResumeInsightsPanel();
   removePageHover();
@@ -414,6 +723,7 @@ function ensureHoverCardElement() {
 
 function showHoverInsight(event, analysis) {
   if (!analysis) return;
+  dismissHoverGuide();
   const card = ensureHoverCardElement();
   
   if (analysis.variant === 'resume') {
@@ -428,7 +738,7 @@ function showHoverInsight(event, analysis) {
         <span class="ai-hover-score">${analysis.score}</span>
         <span class="ai-hover-sub">/100 profile</span>
       </div>
-      <p class="ai-hover-summary">Focus: ${analysis.focusArea} • Tone: ${analysis.tone}</p>
+      <p class="ai-hover-summary">Focus: ${analysis.focusArea} â€¢ Tone: ${analysis.tone}</p>
       <div class="ai-hover-flags">
         <p class="ai-hover-subtle">Highlights</p>
         <ul>${highlights.map(item => `<li>${item}</li>`).join('')}</ul>
@@ -512,7 +822,7 @@ function hideHoverInsight() {
 function performAnalysis(text) {
   const type = detectType(text);
   const normalized = (text || '').toLowerCase();
-  const jobContext = type === 'job_listing' || isLikelyJobText(text) || isFullJobDescription(text);
+  const jobContext = type === 'job_listing' || (isJobHost() && (isLikelyJobText(text) || isFullJobDescription(text)));
   const redFlags = [];
   const greenFlags = [];
 
@@ -522,8 +832,9 @@ function performAnalysis(text) {
     }
   };
 
-  let negativeWeight = 0;
-  let positiveWeight = 0;
+  // Weighted model for 0â€“100 trust score
+  let negativeWeight = 0; // higher => more scammy
+  let positiveWeight = 0; // higher => more trustworthy
 
   const addRisk = (points, message) => {
     negativeWeight += points;
@@ -576,7 +887,7 @@ function performAnalysis(text) {
   }
 
   if (/\b(click\s+(here|the link))\b/i.test(text) && !/\b(company|career|apply\b)/i.test(text)) {
-    addRisk(8, 'Generic “click here” instruction');
+    addRisk(8, 'Generic â€œclick hereâ€ instruction');
   }
 
   if (/\b(work from home|remote)\b/i.test(text) && /\b(no experience required|daily payout)\b/i.test(text)) {
@@ -605,14 +916,14 @@ function performAnalysis(text) {
     addRisk(6, 'Missing standard sections');
   }
 
-  const bulletPoints = (text.match(/[\r\n]+[\s]*(?:[-•*]|[0-9]+\.)/g) || []).length;
+  const bulletPoints = (text.match(/[\r\n]+[\s]*(?:[-â€¢*]|[0-9]+\.)/g) || []).length;
   if (bulletPoints >= 4) {
     addSignal(Math.min(10, bulletPoints * 0.8), 'Structured bullet-point details');
   } else if (bulletPoints <= 1 && jobContext) {
     addRisk(4, 'Little structure');
   }
 
-  const salaryPattern = /\b(salary|ctc|compensation|pay range|package)\b[^$€₹£]{0,60}(\$|€|₹|£)?\d+/i;
+  const salaryPattern = /\b(salary|ctc|compensation|pay range|package)\b[^$â‚¬â‚¹Â£]{0,60}(\$|â‚¬|â‚¹|Â£)?\d+/i;
   if (salaryPattern.test(text)) {
     addSignal(6, 'Shares compensation details');
   }
@@ -683,19 +994,25 @@ function performAnalysis(text) {
   }
 
   const deterministicNoise = getDeterministicNoise(text) * 0.6;
-  const baseScore = jobContext ? 60 : 54;
-  const positiveImpact = jobContext
-    ? Math.min(28, positiveWeight * 0.85)
-    : Math.min(18, positiveWeight * 0.7);
-  const negativeImpact = Math.min(68, negativeWeight * 1.18);
-  let trustScore = baseScore + positiveImpact - negativeImpact + (jobContext ? 4 : 0) + deterministicNoise;
+  // Map weighted signals onto 0â€“100 trust scale
+  // Start from neutral baseline, then move up/down based on weights
+  const baseScore = 60;
+  const positiveImpact = Math.min(30, positiveWeight * 0.9);
+  const negativeImpact = Math.min(80, negativeWeight * 1.2);
+  let trustScore = baseScore + positiveImpact - negativeImpact + (jobContext ? 5 : -5) + deterministicNoise;
+
+  // If many scam indicators, cap in low range
   if (negativeWeight >= 35) {
-    trustScore = Math.min(trustScore, 44);
+    trustScore = Math.min(trustScore, 35);
   }
+
+  // For non-job context, keep score conservative and avoid extremes
   if (!jobContext) {
-    trustScore = Math.min(trustScore, 70);
+    trustScore = Math.max(30, Math.min(trustScore, 75));
   }
-  trustScore = Math.max(5, Math.min(95, Math.round(trustScore)));
+
+  // Final clamp to strict 0â€“100
+  trustScore = Math.max(0, Math.min(100, Math.round(trustScore)));
   const jobConfidence = Math.max(0, Math.min(1, (positiveWeight + 12) / (positiveWeight + negativeWeight + 42)));
   const riskMeta = getRiskMeta(trustScore);
   
@@ -741,9 +1058,9 @@ function generateSummary(type, trustScore, text) {
       return 'Low-risk, well-structured listing with healthy hiring signals.';
     }
     if (trustScore >= 60) {
-      return 'Looks mostly legitimate — review red flags before engaging.';
+      return 'Looks mostly legitimate â€” review red flags before engaging.';
     }
-    return '⚠️ Multiple red flags detected. Validate the employer before sharing details.';
+    return 'âš ï¸ Multiple red flags detected. Validate the employer before sharing details.';
   } else if (type === 'resume') {
     const wordCount = text.split(/\s+/).length;
     return `Resume detected with approximately ${wordCount} words.`;
@@ -763,10 +1080,10 @@ function showNotification(message, type = 'info') {
   notif.className = `ai-notification ai-notification-${type}`;
   
   const icons = {
-    success: '⚡',
-    info: '💼',
-    warning: '⚠️',
-    error: '❌'
+    success: 'âš¡',
+    info: 'ðŸ’¼',
+    warning: 'âš ï¸',
+    error: 'âŒ'
   };
   
   const icon = icons[type] || icons.info;
@@ -827,10 +1144,11 @@ let hoverHintTimeout = null;
 
 function announceHoverReady(kind) {
   const message = kind === 'resume'
-    ? 'Resume insights ready — move your cursor to reveal the ATS score.'
-    : 'Job description scanned — hover anywhere on the page for trust score.';
+    ? 'Resume insights ready â€” move your cursor to reveal the ATS score.'
+    : 'Job description scanned â€” hover anywhere on the page for trust score.';
   showNotification(message, 'info');
   showHoverHint(message);
+  showHoverGuide(kind);
 }
 
 function showHoverHint(message) {
@@ -854,6 +1172,67 @@ function showHoverHint(message) {
   }, 4500);
 }
 
+function showHoverGuide(kind) {
+  if (hoverGuideDismissed) return;
+  const guideText = kind === 'resume'
+    ? 'Move your mouse over the resume text to see ATS grade, keywords, and highlights.'
+    : 'Hover within the job description to reveal trust score and risk signals.';
+  if (!hoverGuideElement) {
+    hoverGuideElement = document.createElement('div');
+    hoverGuideElement.id = 'ai-hover-guide';
+    hoverGuideElement.innerHTML = `
+      <span class="ai-guide-message"></span>
+      <button type="button" aria-label="Dismiss hover guide">âœ•</button>
+    `;
+    hoverGuideElement.style.cssText = `
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 360px;
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.94);
+      border: 1px solid rgba(94, 234, 212, 0.35);
+      color: #f8fafc;
+      font-size: 13px;
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      box-shadow: 0 14px 40px rgba(2, 6, 23, 0.45);
+      z-index: 9999999;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    `;
+    const closeBtn = hoverGuideElement.querySelector('button');
+    closeBtn.style.cssText = `
+      background: transparent;
+      border: none;
+      color: inherit;
+      font-size: 14px;
+      cursor: pointer;
+      padding: 0;
+    `;
+    closeBtn.addEventListener('click', () => dismissHoverGuide(true));
+    document.body.appendChild(hoverGuideElement);
+  }
+  const textSpan = hoverGuideElement.querySelector('.ai-guide-message');
+  if (textSpan) {
+    textSpan.textContent = guideText;
+  }
+  hoverGuideElement.style.opacity = '1';
+}
+
+function dismissHoverGuide(permanent = false) {
+  if (permanent) {
+    hoverGuideDismissed = true;
+  }
+  if (hoverGuideElement) {
+    hoverGuideElement.style.opacity = '0';
+  }
+}
+
 // ==================== MODAL SYSTEM ====================
 function showAnalysisModal(analysis, sourceElement) {
   // Remove existing modal
@@ -862,6 +1241,31 @@ function showAnalysisModal(analysis, sourceElement) {
   
   const modal = document.createElement('div');
   modal.id = 'ai-analysis-modal';
+  
+  // Get current theme
+  const isDark = currentTheme === 'dark';
+  
+  // Theme-aware colors
+  const backdropBg = isDark ? 'rgba(0,0,0,0.85)' : 'rgba(0,0,0,0.7)';
+  const modalBg = isDark ? 'rgba(15, 23, 42, 0.98)' : 'white';
+  const modalBorder = isDark ? 'rgba(148, 163, 184, 0.2)' : 'transparent';
+  const textColor = isDark ? '#f1f5f9' : '#1e293b';
+  const mutedText = isDark ? '#94a3b8' : '#475569';
+  const mutedTextLight = isDark ? '#64748b' : '#64748b';
+  const progressBg = isDark ? 'rgba(148, 163, 184, 0.2)' : '#e2e8f0';
+  const shadow = isDark ? '0 20px 60px rgba(0,0,0,0.8)' : '0 20px 60px rgba(0,0,0,0.5)';
+  
+  // Red flags styling (theme-aware)
+  const redFlagBg = isDark ? 'rgba(239, 68, 68, 0.15)' : '#fee2e2';
+  const redFlagBorder = '#ef4444';
+  const redFlagTitle = isDark ? '#fca5a5' : '#991b1b';
+  const redFlagText = isDark ? '#fca5a5' : '#7f1d1d';
+  
+  // Green flags styling (theme-aware)
+  const greenFlagBg = isDark ? 'rgba(16, 185, 129, 0.15)' : '#dcfce7';
+  const greenFlagBorder = '#10b981';
+  const greenFlagTitle = isDark ? '#6ee7b7' : '#065f46';
+  const greenFlagText = isDark ? '#6ee7b7' : '#047857';
   
   const trustColor = analysis.trustScore >= 75 ? '#10b981' : 
                     analysis.trustScore >= 50 ? '#f59e0b' : '#ef4444';
@@ -873,7 +1277,7 @@ function showAnalysisModal(analysis, sourceElement) {
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(0,0,0,0.7);
+      background: ${backdropBg};
       z-index: 9999999;
       display: flex;
       align-items: center;
@@ -881,49 +1285,51 @@ function showAnalysisModal(analysis, sourceElement) {
       animation: fadeIn 0.2s ease-out;
     " id="modal-backdrop">
       <div style="
-        background: white;
+        background: ${modalBg};
+        border: 1px solid ${modalBorder};
         border-radius: 20px;
         padding: 32px;
         max-width: 500px;
         width: 90%;
         max-height: 80vh;
         overflow-y: auto;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        box-shadow: ${shadow};
         animation: slideUp 0.3s ease-out;
+        color: ${textColor};
       " onclick="event.stopPropagation()">
-        <h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
-          ${analysis.type === 'job_listing' ? '💼' : '📄'} Analysis Results
+        <h2 style="margin: 0 0 20px 0; font-size: 24px; color: ${textColor}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+          ${analysis.type === 'job_listing' ? 'ðŸ’¼' : 'ðŸ“„'} Analysis Results
         </h2>
         
         <div style="margin-bottom: 24px;">
           <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-            <span style="font-weight: 600; color: #475569;">Trust Score</span>
+            <span style="font-weight: 600; color: ${mutedText};">Trust Score</span>
             <span style="font-weight: 700; color: ${trustColor};">${analysis.trustScore}/100</span>
           </div>
-          <div style="background: #e2e8f0; border-radius: 10px; height: 10px; overflow: hidden;">
+          <div style="background: ${progressBg}; border-radius: 10px; height: 10px; overflow: hidden;">
             <div style="background: ${trustColor}; height: 100%; width: ${analysis.trustScore}%; transition: width 0.5s ease;"></div>
           </div>
         </div>
         
         ${analysis.redFlags.length > 0 ? `
-          <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
-            <h3 style="margin: 0 0 12px 0; color: #991b1b; font-size: 14px; font-weight: 700;">⚠️ Red Flags</h3>
-            <ul style="margin: 0; padding-left: 20px; color: #7f1d1d;">
+          <div style="background: ${redFlagBg}; border-left: 4px solid ${redFlagBorder}; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
+            <h3 style="margin: 0 0 12px 0; color: ${redFlagTitle}; font-size: 14px; font-weight: 700;">âš ï¸ Red Flags</h3>
+            <ul style="margin: 0; padding-left: 20px; color: ${redFlagText};">
               ${analysis.redFlags.map(flag => `<li style="margin: 4px 0;">${flag}</li>`).join('')}
             </ul>
           </div>
         ` : ''}
         
         ${analysis.greenFlags.length > 0 ? `
-          <div style="background: #dcfce7; border-left: 4px solid #10b981; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
-            <h3 style="margin: 0 0 12px 0; color: #065f46; font-size: 14px; font-weight: 700;">✅ Positive Indicators</h3>
-            <ul style="margin: 0; padding-left: 20px; color: #047857;">
+          <div style="background: ${greenFlagBg}; border-left: 4px solid ${greenFlagBorder}; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
+            <h3 style="margin: 0 0 12px 0; color: ${greenFlagTitle}; font-size: 14px; font-weight: 700;">âœ… Positive Indicators</h3>
+            <ul style="margin: 0; padding-left: 20px; color: ${greenFlagText};">
               ${analysis.greenFlags.map(flag => `<li style="margin: 4px 0;">${flag}</li>`).join('')}
             </ul>
           </div>
         ` : ''}
         
-        <p style="color: #64748b; line-height: 1.6; margin-bottom: 24px;">${analysis.summary}</p>
+        <p style="color: ${mutedTextLight}; line-height: 1.6; margin-bottom: 24px;">${analysis.summary}</p>
         
         <button onclick="document.getElementById('ai-analysis-modal').remove()" style="
           width: 100%;
@@ -935,8 +1341,8 @@ function showAnalysisModal(analysis, sourceElement) {
           font-size: 16px;
           font-weight: 700;
           cursor: pointer;
-          transition: transform 0.2s;
-        " onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+          transition: transform 0.2s, opacity 0.2s;
+        " onmouseover="this.style.transform='translateY(-2px)'; this.style.opacity='0.9'" onmouseout="this.style.transform='translateY(0)'; this.style.opacity='1'">
           Close
         </button>
       </div>
@@ -1111,7 +1517,7 @@ function isLikelyJobText(text) {
     }
   });
   
-  const bulletCount = (text.match(/[\r\n]+[\s]*(?:[-•*]|[0-9]+\.)/g) || []).length;
+  const bulletCount = (text.match(/[\r\n]+[\s]*(?:[-â€¢*]|[0-9]+\.)/g) || []).length;
   const bulletScore = Math.min(6, bulletCount * 1.5);
   
   const colonSections = (text.match(/\b[A-Z][A-Za-z\s]{2,40}:/g) || []).length;
@@ -1159,7 +1565,7 @@ function isFullJobDescription(text) {
   if (structuredHeaders >= 3) confidence += 2;
   else if (structuredHeaders >= 2) confidence += 1;
   
-  const bulletCount = (text.match(/[\r\n]+[\s]*(?:[-•*]|[0-9]+\.)/g) || []).length;
+  const bulletCount = (text.match(/[\r\n]+[\s]*(?:[-â€¢*]|[0-9]+\.)/g) || []).length;
   if (bulletCount >= 6) confidence += 2;
   else if (bulletCount >= 3) confidence += 1;
   
@@ -1189,7 +1595,7 @@ function showResumeInsights(text) {
   }
   
   resumeInsightPanel.innerHTML = `
-    <button class="ai-resume-close" aria-label="Close resume insights">×</button>
+    <button class="ai-resume-close" aria-label="Close resume insights">Ã—</button>
     <div class="ai-resume-header">
       <div>
         <p class="ai-resume-kicker">Agentic AI Resume Pulse</p>
@@ -1392,6 +1798,75 @@ function analyzeResumeContent(text) {
     addHighlight('Add clearer Experience, Skills, and Education sections for ATS parsing.');
   }
 
+  // Fake resume / scammy profile signals
+  const buzzwords = [
+    'hardworking', 'dedicated', 'motivated', 'self starter', 'team player',
+    'dynamic', 'results-driven', 'fast learner', 'passionate', 'innovative',
+    'synergy', 'go-getter', 'highly motivated'
+  ];
+  const buzzwordMatches = buzzwords.reduce((count, word) => {
+    const regex = new RegExp(`\\b${word.replace(' ', '\\s+')}\\b`, 'gi');
+    return count + ((text.match(regex) || []).length);
+  }, 0);
+  if (buzzwordMatches >= 15) {
+    penalty += 10;
+    addHighlight('Resume is overloaded with generic buzzwords â€” replace with specific, measurable outcomes.');
+    addBadge('Buzzword heavy');
+  } else if (buzzwordMatches >= 8) {
+    penalty += 5;
+    addHighlight('Trim down generic buzzwords and focus on concrete responsibilities.');
+  }
+
+  // Suspicious / fake certifications
+  const fakeCertPatterns = [
+    /\b(youtube certified|whatsapp certified|meta verified professional)\b/i,
+    /\b(guaranteed placement certification|overnight expert course)\b/i
+  ];
+  const fakeCertHit = fakeCertPatterns.some(p => p.test(text));
+  if (fakeCertHit) {
+    penalty += 12;
+    addHighlight('Certifications look suspicious or non-standard â€” verify and rephrase.');
+    addBadge('Certifications need review');
+  }
+
+  // Repeated templated lines
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const normalizedLines = lines.map(l => l.replace(/\s+/g, ' ').toLowerCase());
+  const lineCounts = normalizedLines.reduce((map, line) => {
+    if (line.length < 25) return map;
+    map[line] = (map[line] || 0) + 1;
+    return map;
+  }, {});
+  const repeatedLines = Object.values(lineCounts).filter(c => c >= 2).length;
+  if (repeatedLines >= 3) {
+    penalty += 10;
+    addHighlight('Multiple bullet points look copy-pasted â€” personalise repeated lines.');
+    addBadge('Template repetition');
+  }
+
+  // Timeline consistency and unrealistic experience
+  const yearMatches = text.match(/\b(19[8-9]\d|20[0-4]\d)\b/g) || [];
+  const uniqueYears = Array.from(new Set(yearMatches.map(y => parseInt(y, 10)))).sort();
+  if (uniqueYears.length >= 2) {
+    const span = uniqueYears[uniqueYears.length - 1] - uniqueYears[0];
+    if (span > 45) {
+      penalty += 8;
+      addHighlight('Employment timeline spans unusually long â€” double check dates.');
+      addBadge('Timeline check');
+    }
+  }
+
+  // Unrealistic experience level vs. degree year
+  const expMatches = text.match(/(\d+)\+?\s+years? of experience/gi) || [];
+  const maxExp = expMatches.reduce((max, m) => {
+    const num = parseInt(m, 10);
+    return isNaN(num) ? max : Math.max(max, num);
+  }, 0);
+  if (maxExp >= 20 && !/\b(senior|director|vp|c-level|chief)\b/i.test(text)) {
+    penalty += 6;
+    addHighlight('High years of experience claimed without senior-level titles â€” ensure claims are realistic.');
+  }
+
   const commonATSKeywords = [
     'python','java','javascript','typescript','react','node','sql','nosql','aws','azure','gcp','docker','kubernetes','git','terraform',
     'agile','scrum','machine learning','ai','data science','analytics','tableau','power bi','project management','leadership',
@@ -1429,7 +1904,7 @@ function analyzeResumeContent(text) {
     addHighlight('Great use of quantified achievements.');
   } else if (metricsMatches >= 2) {
     score += 8;
-    addHighlight('Includes measurable outcomes — add a few more for extra punch.');
+    addHighlight('Includes measurable outcomes â€” add a few more for extra punch.');
   } else {
     penalty += 6;
     addHighlight('Add percentages, counts, or revenue impact to showcase outcomes.');
@@ -1446,7 +1921,7 @@ function analyzeResumeContent(text) {
     addHighlight('Start bullet points with action verbs (Led, Built, Delivered).');
   }
 
-  const bulletPoints = (text.match(/[\r\n]+[\s]*(?:[-•*]|[0-9]+\.)/g) || []).length;
+  const bulletPoints = (text.match(/[\r\n]+[\s]*(?:[-â€¢*]|[0-9]+\.)/g) || []).length;
   if (bulletPoints >= 10) {
     score += 8;
     addBadge('Well-formatted');
@@ -1464,7 +1939,7 @@ function analyzeResumeContent(text) {
     score += 5;
   } else {
     penalty += 5;
-    addHighlight('Keep resumes between 1–2 pages (around 400–850 words).');
+    addHighlight('Keep resumes between 1â€“2 pages (around 400â€“850 words).');
   }
 
   const firstPersonCount = (normalized.match(/\b(i |my |me |mine )/g) || []).length;
@@ -1475,7 +1950,7 @@ function analyzeResumeContent(text) {
   } else if (firstPersonCount > 14) {
     penalty += 4;
     tone = 'Personal';
-    addHighlight('Tone feels conversational — lean on objective statements for ATS.');
+    addHighlight('Tone feels conversational â€” lean on objective statements for ATS.');
   }
 
   const hasContactInfo = /\b(email|@|phone|mobile|linkedin\.com\/in)\b/i.test(text);
@@ -1501,6 +1976,13 @@ function analyzeResumeContent(text) {
 
   if (/\b(references available upon request)\b/i.test(text)) {
     penalty += 2;
+  }
+
+  // Penalise resumes that never mention dates or years â€” ATS cannot build a timeline
+  const hasAnyYear = /\b(19[8-9]\d|20[0-4]\d)\b/.test(text);
+  if (!hasAnyYear) {
+    penalty += 6;
+    addHighlight('Add years for education and work experience to build a clear timeline.');
   }
 
   if (!/\b(years? of experience|yrs of experience)\b/i.test(text) && wordCount > 400) {
@@ -1650,7 +2132,7 @@ async function loadPDFJsSafe() {
                 const blob = new Blob([workerCode], { type: 'application/javascript' });
                 window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
                 pdfJsLoaded = true;
-                console.log('✅ PDF.js loaded successfully (CSP-safe)');
+                console.log('âœ… PDF.js loaded successfully (CSP-safe)');
                 resolve(true);
               })
               .catch(err => {
@@ -1800,7 +2282,7 @@ async function fetchPdfArrayBuffer(pdfUrl) {
 
 async function analyzePDFPage() {
   try {
-    showLoadingNotification('Agentic AI scanning PDF…');
+    showLoadingNotification('Agentic AI scanning PDFâ€¦');
     const pdfSource = resolvePDFSource();
     const href = pdfSource || window.location.href;
     const pdfText = await extractTextFromPDF(href);
@@ -1819,14 +2301,14 @@ async function analyzePDFPage() {
       const resumeAnalysis = analyzeResumeContent(pdfText);
       if (resumeAnalysis) {
         attachResumeHoverToPageBody(resumeAnalysis);
-        showNotification('📄 Resume PDF scanned — hover anywhere for ATS score.', 'success');
+        showNotification('ðŸ“„ Resume PDF scanned â€” hover anywhere for ATS score.', 'success');
       }
     } else {
       removeResumeInsightsPanel();
       // If it's a job listing PDF, attach hover
       if (analysis.type === 'job_listing' || analysis.jobContext || isLikelyJobText(pdfText) || isFullJobDescription(pdfText)) {
         attachHoverToPageBody(analysis);
-        showNotification('🧭 Full job description PDF scanned — hover anywhere for insight.', 'success');
+        showNotification('ðŸ§­ Full job description PDF scanned â€” hover anywhere for insight.', 'success');
       } else {
         removePageHover();
       }
@@ -1889,7 +2371,7 @@ function monitorFileUploads() {
       if (!file) return;
       const isPDF = file.type === 'application/pdf' || (file.name && file.name.toLowerCase().endsWith('.pdf'));
       if (!isPDF) return;
-      showLoadingNotification('Scanning local PDF resume…');
+      showLoadingNotification('Scanning local PDF resumeâ€¦');
       const text = await extractTextFromBlob(file);
       hideLoadingNotification();
       if (!text) {
@@ -1902,13 +2384,13 @@ function monitorFileUploads() {
         const resumeAnalysis = analyzeResumeContent(text);
         if (resumeAnalysis) {
           attachResumeHoverToPageBody(resumeAnalysis);
-          showNotification('📄 Resume PDF scanned — hover anywhere for ATS score.', 'success');
+          showNotification('ðŸ“„ Resume PDF scanned â€” hover anywhere for ATS score.', 'success');
         }
       } else {
         removeResumeInsightsPanel();
         if (analysis.type === 'job_listing' || isLikelyJobText(text) || isFullJobDescription(text)) {
           attachHoverToPageBody(analysis);
-          showNotification('🧭 Full job description PDF scanned — hover anywhere for insight.', 'success');
+          showNotification('ðŸ§­ Full job description PDF scanned â€” hover anywhere for insight.', 'success');
         } else {
           removePageHover();
         }
@@ -1928,11 +2410,11 @@ async function analyzePDFUrl(url) {
       const resumeAnalysis = analyzeResumeContent(text);
       if (resumeAnalysis) {
         attachResumeHoverToPageBody(resumeAnalysis);
-        showNotification('📄 Resume PDF scanned — hover anywhere for ATS score.', 'success');
+        showNotification('ðŸ“„ Resume PDF scanned â€” hover anywhere for ATS score.', 'success');
       }
     } else if (analysis.type === 'job_listing' || isLikelyJobText(text) || isFullJobDescription(text)) {
       attachHoverToPageBody(analysis);
-      showNotification('🧭 Full job description PDF scanned — hover anywhere for insight.', 'success');
+      showNotification('ðŸ§­ Full job description PDF scanned â€” hover anywhere for insight.', 'success');
     } else {
       removePageHover();
     }
@@ -1966,8 +2448,27 @@ function startDomObserver() {
   domObserver = new MutationObserver(() => {
     if (domObserverTimeout) clearTimeout(domObserverTimeout);
     domObserverTimeout = setTimeout(() => {
-      highlightJobListings();
-      analyzeJobCards();
+      if (isJobHost()) {
+        const hostname = window.location.hostname;
+        const hasJobCards = document.querySelectorAll('.individual_internship, .job-card-container, .jobs-search-results__list-item, .jobTuple, .job_seen_beacon, .react-job-listing').length > 0;
+        
+        // If we find job cards but page mode is unknown, set it to job
+        if (currentPageMode === 'unknown' && hasJobCards) {
+          currentPageMode = 'job';
+          console.log('ðŸ” DOM observer: Found job cards, setting to job mode');
+        }
+        
+        if (currentPageMode === 'job') {
+          // Skip highlightJobListings on Internshala listing pages (full-page analysis)
+          const isInternshalaListing = hostname.includes('internshala.com') && 
+                                      document.querySelectorAll('.individual_internship').length > 1;
+          if (!isInternshalaListing) {
+            highlightJobListings(); // Only skip on Internshala listing pages
+          }
+          // Always analyze job cards for all sites (including Internshala)
+          analyzeJobCards();
+        }
+      }
     }, 600);
   });
   domObserver.observe(document.body, { childList: true, subtree: true });

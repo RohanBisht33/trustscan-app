@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "AI Job & Resume Analyzer",
+  "name": "TrustScan - AI Job & Resume Analyzer",
   "version": "2.0.0",
   "description": "Intelligent analysis of job listings and resumes",
   
@@ -16,8 +16,14 @@
     "*://*.naukri.com/*",
     "*://*.indeed.com/*",
     "*://*.glassdoor.com/*",
-    "*://cdn.jsdelivr.net/*",
-    "<all_urls>"
+    "*://*.wellfound.com/*",
+    "*://*.monster.com/*",
+    "*://*.google.com/*",
+    "*://*.drive.google.com/*",
+    "*://*.dropbox.com/*",
+    "*://*.githubusercontent.com/*",
+    "*://*.flowcv.com/*",
+    "*://*.flowcv.io/*"
   ],
   
   "content_security_policy": {
@@ -34,7 +40,21 @@
   },
   
   "content_scripts": [{
-    "matches": ["<all_urls>"],
+    "matches": [
+      "*://*.linkedin.com/*",
+      "*://*.internshala.com/*",
+      "*://*.naukri.com/*",
+      "*://*.indeed.com/*",
+      "*://*.glassdoor.com/*",
+      "*://*.wellfound.com/*",
+      "*://*.monster.com/*",
+      "*://*.google.com/*",
+      "*://*.drive.google.com/*",
+      "*://*.dropbox.com/*",
+      "*://*.githubusercontent.com/*",
+      "*://*.flowcv.com/*",
+      "*://*.flowcv.io/*"
+    ],
     "js": ["content.js"],
     "css": ["content.css"],
     "run_at": "document_idle"
